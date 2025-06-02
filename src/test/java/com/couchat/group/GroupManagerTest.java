@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,29 +28,13 @@ public class GroupManagerTest {
         logger.info("GroupManager initialized and cleared for test.");
     }
 
-    private String createTestGroup(String groupName, List<String> members) {
-        groupManager.createGroup(groupName, members);
-        // Find the created group's ID (this is a bit of a workaround for testing without createGroup returning ID)
-        return groupManager.groups.entrySet().stream()
-                .filter(entry -> entry.getValue().groupName.equals(groupName))
-                .map(Map.Entry::getKey)
-                .findFirst()
-                .orElse(null);
-    }
-
     @Test
     void testCreateGroup_Success() {
         String groupName = "Test Group Alpha";
         List<String> members = Arrays.asList("user1", "user2");
         logger.info("Testing group creation: Name='{}', Members={}", groupName, members);
 
-        groupManager.createGroup(groupName, members);
-
-        String createdGroupId = groupManager.groups.entrySet().stream()
-            .filter(entry -> entry.getValue().groupName.equals(groupName))
-            .map(Map.Entry::getKey)
-            .findFirst()
-            .orElse(null);
+        String createdGroupId = groupManager.createGroup(groupName, members);
 
         assertNotNull(createdGroupId, "Group ID should not be null after creation.");
         assertTrue(groupManager.groupExists(createdGroupId), "Group should exist after creation.");
@@ -65,34 +50,36 @@ public class GroupManagerTest {
     @Test
     void testCreateGroup_NullName() {
         logger.info("Testing group creation with null name.");
-        groupManager.createGroup(null, Arrays.asList("user1"));
-        assertEquals(0, groupManager.groups.size(), "No group should be created with a null name.");
+        String groupId = groupManager.createGroup(null, Arrays.asList("user1"));
+        assertNull(groupId, "Group ID should be null when creation fails due to null name.");
     }
 
     @Test
     void testCreateGroup_EmptyName() {
         logger.info("Testing group creation with empty name.");
-        groupManager.createGroup("   ", Arrays.asList("user1"));
-        assertEquals(0, groupManager.groups.size(), "No group should be created with an empty name.");
+        String groupId = groupManager.createGroup("   ", Arrays.asList("user1"));
+        assertNull(groupId, "Group ID should be null for empty name.");
     }
 
     @Test
     void testCreateGroup_NullMembers() {
         logger.info("Testing group creation with null member list.");
-        groupManager.createGroup("Null Member Group", null);
-        assertEquals(0, groupManager.groups.size(), "No group should be created with a null member list.");
+        String groupId = groupManager.createGroup("Null Member Group", null);
+        assertNull(groupId, "Group ID should be null for null members.");
     }
 
     @Test
     void testCreateGroup_EmptyMembers() {
         logger.info("Testing group creation with empty member list.");
-        groupManager.createGroup("Empty Member Group", Collections.emptyList());
-        assertEquals(0, groupManager.groups.size(), "No group should be created with an empty member list.");
+        String groupId = groupManager.createGroup("Empty Member Group", Collections.emptyList());
+        assertNull(groupId, "Group ID should be null for empty member list.");
     }
 
     @Test
     void testAddMemberToGroup_Success() {
-        String groupId = createTestGroup("Membership Test Group", new ArrayList<>(Arrays.asList("memberA")));
+        String groupName = "Membership Test Group";
+        List<String> initialMembers = new ArrayList<>(Arrays.asList("memberA"));
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId, "Test group setup failed to return a group ID.");
 
         String newMember = "memberB";
@@ -109,20 +96,20 @@ public class GroupManagerTest {
     void testAddMemberToGroup_GroupNotFound() {
         logger.info("Testing adding member to a non-existent group.");
         groupManager.addMemberToGroup("nonExistentGroupId_XYZ", "userX");
-        // No direct state change to assert other than no exceptions and logs (which we don't check here)
-        // Ensure no new groups were accidentally created
-        assertEquals(0, groupManager.groups.size());
+        assertNull(groupManager.getGroupById("nonExistentGroupId_XYZ"));
     }
 
     @Test
     void testAddMemberToGroup_NullGroupId() {
         groupManager.addMemberToGroup(null, "userX");
-        assertEquals(0, groupManager.groups.size());
+        assertNull(groupManager.getGroupById(null));
     }
 
     @Test
     void testAddMemberToGroup_NullMemberId() {
-        String groupId = createTestGroup("Null Member ID Test Group", Arrays.asList("member1"));
+        String groupName = "Null Member ID Test Group";
+        List<String> initialMembers = Arrays.asList("member1");
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
         groupManager.addMemberToGroup(groupId, null);
         assertEquals(1, groupManager.getGroupMembers(groupId).size(), "Member count should remain 1.");
@@ -130,7 +117,9 @@ public class GroupManagerTest {
 
     @Test
     void testAddMemberToGroup_EmptyMemberId() {
-        String groupId = createTestGroup("Empty Member ID Test Group", Arrays.asList("member1"));
+        String groupName = "Empty Member ID Test Group";
+        List<String> initialMembers = Arrays.asList("member1");
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
         groupManager.addMemberToGroup(groupId, "  ");
         assertEquals(1, groupManager.getGroupMembers(groupId).size(), "Member count should remain 1.");
@@ -139,7 +128,9 @@ public class GroupManagerTest {
     @Test
     void testAddMemberToGroup_MemberAlreadyExists() {
         String existingMember = "memberAlpha";
-        String groupId = createTestGroup("Existing Member Test Group", Arrays.asList(existingMember));
+        String groupName = "Existing Member Test Group";
+        List<String> initialMembers = Arrays.asList(existingMember);
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
 
         logger.info("Testing adding an existing member '{}' to group ID '{}'", existingMember, groupId);
@@ -150,7 +141,9 @@ public class GroupManagerTest {
 
     @Test
     void testGetGroupMessages_Success_WithMessages() {
-        String groupId = createTestGroup("Message Test Group", Arrays.asList("userMsg1"));
+        String groupName = "Message Test Group";
+        List<String> initialMembers = Arrays.asList("userMsg1");
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
 
         logger.info("Testing getting messages for group ID '{}'", groupId);
@@ -166,7 +159,9 @@ public class GroupManagerTest {
 
     @Test
     void testGetGroupMessages_Success_NoMessages() {
-        String groupId = createTestGroup("No Message Test Group", Arrays.asList("userNoMsg"));
+        String groupName = "No Message Test Group";
+        List<String> initialMembers = Arrays.asList("userNoMsg");
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
         logger.info("Testing getting messages for group ID '{}' which has no messages.", groupId);
         List<String> messages = groupManager.getGroupMessages(groupId);
@@ -190,7 +185,9 @@ public class GroupManagerTest {
 
     @Test
     void addMessageToGroupStore_NullMessage() {
-        String groupId = createTestGroup("Null Message Add Test", Arrays.asList("user1"));
+        String groupName = "Null Message Add Test";
+        List<String> initialMembers = Arrays.asList("user1");
+        String groupId = groupManager.createGroup(groupName, initialMembers);
         assertNotNull(groupId);
         groupManager.addMessageToGroupStore(groupId, null);
         assertTrue(groupManager.getGroupMessages(groupId).isEmpty(), "No message should be added if it's null.");

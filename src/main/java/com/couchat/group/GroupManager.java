@@ -37,14 +37,14 @@ public class GroupManager implements GroupManagementInterface {
     }
 
     @Override
-    public void createGroup(String groupName, List<String> memberIds) {
+    public String createGroup(String groupName, List<String> memberIds) { // Changed to return String (groupId)
         if (groupName == null || groupName.trim().isEmpty()) {
             logger.warn("Failed to create group: group name is null or empty.");
-            return;
+            return null; // Return null on failure
         }
         if (memberIds == null || memberIds.isEmpty()) {
             logger.warn("Failed to create group '{}': member list is null or empty.", groupName);
-            return;
+            return null; // Return null on failure
         }
 
         String groupId = "group_" + System.currentTimeMillis() + "_" + groupName.replaceAll("\s+", ""); // Simple unique ID
@@ -52,16 +52,14 @@ public class GroupManager implements GroupManagementInterface {
 
         if (groups.containsKey(groupId)) {
             logger.warn("Failed to create group '{}': Group ID {} already exists.", groupName, groupId);
-            // This case should be rare with timestamp in ID, but good to handle.
-            return;
+            return null; // Return null if group ID conflict (should be rare)
         }
 
         Group newGroup = new Group(groupId, groupName, memberIds);
         groups.put(groupId, newGroup);
         groupMessages.put(groupId, new ArrayList<>()); // Initialize message list for the new group
         logger.info("Group '{}' (ID: {}) created successfully with members: {}.", groupName, groupId, memberIds);
-        // TODO: Persist group to database
-        // TODO: Notify members (if applicable at this stage)
+        return groupId; // Return the ID of the newly created group
     }
 
     @Override
@@ -119,7 +117,7 @@ public class GroupManager implements GroupManagementInterface {
         return groups.containsKey(groupId);
     }
 
-    public Group getGroupById(String groupId) { // Made public for easier testing access
+    public Group getGroupById(String groupId) { // Ensure this is accessible (public or package-private)
         return groups.get(groupId);
     }
 
