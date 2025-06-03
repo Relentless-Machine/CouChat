@@ -11,6 +11,7 @@ public class P2PConnectionManager implements P2PConnectionInterface {
     private static final Logger logger = LoggerFactory.getLogger(P2PConnectionManager.class);
 
     private String currentPeerAddress;
+    private String lastPeerAddress; // 存储上一次连接的对等地址，用于重连
     private boolean isConnected;
 
     public P2PConnectionManager() {
@@ -36,11 +37,18 @@ public class P2PConnectionManager implements P2PConnectionInterface {
 
     @Override
     public void handleReconnect() {
+        // 首先尝试使用当前地址
         if (this.currentPeerAddress != null && !this.currentPeerAddress.isEmpty()) {
-            logger.info("Attempting to reconnect to: {}", this.currentPeerAddress);
+            logger.info("Attempting to reconnect to current peer: {}", this.currentPeerAddress);
             // Placeholder for reconnection logic
             initiateConnection(this.currentPeerAddress); // Re-use initiate logic
-        } else {
+        }
+        // 如果当前地址为空，尝试使用上次的地址
+        else if (this.lastPeerAddress != null && !this.lastPeerAddress.isEmpty()) {
+            logger.info("Attempting to reconnect to last peer: {}", this.lastPeerAddress);
+            initiateConnection(this.lastPeerAddress);
+        }
+        else {
             logger.warn("No previous peer address available to reconnect.");
             this.isConnected = false;
         }
@@ -78,6 +86,7 @@ public class P2PConnectionManager implements P2PConnectionInterface {
     public void closeConnection() {
         if (this.isConnected) { // Only log and change state if actually connected
             logger.info("Closing P2P connection with: {}", this.currentPeerAddress);
+            this.lastPeerAddress = this.currentPeerAddress; // 保存当前对等地址到lastPeerAddress
             this.currentPeerAddress = null; // Clear peer address on disconnect to match test expectations
             this.isConnected = false;
         } else {
