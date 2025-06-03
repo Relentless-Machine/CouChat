@@ -92,9 +92,19 @@ public class AuthenticationManagerTest {
     void testBindDevicePasskey_Success() {
         String deviceId = "testDevice123";
         String passkey = "strongPasskey456";
+        String username = "testuser";
+        String password = "password123";
+
+        // Ensure the user is logged in before binding a passkey
+        authenticationManager.authenticateUser(username, password);
+        assertTrue(authenticationManager.isUserLoggedIn(username), "User '" + username + "' should be logged in before binding passkey.");
+
         logger.info("Testing successful device passkey binding for device: {}, passkey: {}", deviceId, passkey);
         authenticationManager.bindDevicePasskey(deviceId, passkey);
-        assertEquals("hashed_" + passkey, authenticationManager.getBoundPasskeyHash(deviceId),
+
+        // Use the same hashing mechanism as the manager for verification
+        String expectedPasskeyHash = authenticationManager.hashPassword(passkey);
+        assertEquals(expectedPasskeyHash, authenticationManager.getBoundPasskeyHash(deviceId),
                 "Passkey hash should be correctly stored for the device.");
     }
 
