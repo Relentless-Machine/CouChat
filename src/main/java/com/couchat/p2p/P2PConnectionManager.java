@@ -78,7 +78,7 @@ public class P2PConnectionManager implements P2PConnectionInterface {
     public void closeConnection() {
         if (this.isConnected) { // Only log and change state if actually connected
             logger.info("Closing P2P connection with: {}", this.currentPeerAddress);
-            // this.currentPeerAddress = null; // Keep currentPeerAddress for potential reconnect
+            this.currentPeerAddress = null; // Clear peer address on disconnect to match test expectations
             this.isConnected = false;
         } else {
             logger.info("No active connection to close, or already closed.");
