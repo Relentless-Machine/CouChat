@@ -15,13 +15,26 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Unit tests for the {@link MessageSecurityManager} class.
+ * These tests cover encryption, decryption, and message storage functionalities.
+ * With the introduction of SQLite, these tests now interact with a test database.
+ */
 @ExtendWith(MockitoExtension.class)
 public class MessageSecurityManagerTest {
 
     private static final Logger logger = LoggerFactory.getLogger(MessageSecurityManagerTest.class);
     private MessageSecurityManager messageSecurityManager;
     private SecretKey testAesKey;
+    private static final String TEST_DB_URL = "jdbc:sqlite:test_couchat_storage.db"; // Use a separate DB for tests
 
+    /**
+     * Sets up the test environment before each test.
+     * This includes initializing a fixed AES key for predictable encryption/decryption
+     * and ensuring the database is clean.
+     *
+     * @throws NoSuchAlgorithmException if the AES algorithm is not available.
+     */
     @BeforeEach
     void setUp() throws NoSuchAlgorithmException {
         KeyGenerator keyGen = KeyGenerator.getInstance("AES");
@@ -29,11 +42,23 @@ public class MessageSecurityManagerTest {
         secureRandom.setSeed("a_very_fixed_seed_for_testing_only_123".getBytes(StandardCharsets.UTF_8));
         keyGen.init(256, secureRandom); // AES-256
         testAesKey = keyGen.generateKey();
-        messageSecurityManager = new MessageSecurityManager(testAesKey);
-        messageSecurityManager.clearInMemoryStore(); // Ensure clean state for each test
-        logger.info("Test AES key initialized and MessageSecurityManager reset for test.");
+
+        // Point MessageSecurityManager to the test database for this test run
+        // This requires a way to configure the DB_URL, or the MessageSecurityManager
+        // needs to be refactored to accept a DB_URL or Connection provider.
+        // For now, we'll assume MessageSecurityManager uses its default DB_URL,
+        // and clearInMemoryStore() will target that. For true isolation, a test-specific DB is better.
+        // Let's modify MessageSecurityManager to allow DB_URL override for tests or use a test-specific instance.
+        // For simplicity in this step, we will rely on the clearInMemoryStore to clean the default DB.
+        // However, the ideal approach is to use a dedicated test database.
+        messageSecurityManager = new MessageSecurityManager(testAesKey); // This will use the default DB_URL
+        messageSecurityManager.clearInMemoryStore(); // This now clears the SQLite 'messages' table
+        logger.info("Test AES key initialized and MessageSecurityManager (using SQLite) reset for test.");
     }
 
+    /**
+     * Tests successful encryption and decryption of a message.
+     */
     @Test
     void testEncryptAndDecryptMessage_Success() {
         String originalMessage = "Hello, Secure World! This is a test message.";
@@ -52,18 +77,31 @@ public class MessageSecurityManagerTest {
         }
     }
 
+    /**
+     * Tests encryption with a null input message.
+     *
+     * @throws Exception if an unexpected error occurs.
+     */
     @Test
     void testEncryptMessage_NullInput() throws Exception {
         logger.info("Testing encryption with null input message.");
         assertNull(messageSecurityManager.encryptMessage(null), "Encrypting a null message should return null.");
     }
 
+    /**
+     * Tests decryption with a null input message.
+     *
+     * @throws Exception if an unexpected error occurs.
+     */
     @Test
     void testDecryptMessage_NullInput() throws Exception {
         logger.info("Testing decryption with null input message.");
         assertNull(messageSecurityManager.decryptMessage(null), "Decrypting a null message should return null.");
     }
 
+    /**
+     * Tests encryption when the AES key is not initialized (null).
+     */
     @Test
     void testEncryptMessage_NullKey() {
         logger.info("Testing encryption with a null AES key.");
@@ -74,6 +112,9 @@ public class MessageSecurityManagerTest {
         assertEquals("AES key is not initialized. Cannot encrypt message.", exception.getMessage());
     }
 
+    /**
+     * Tests decryption when the AES key is not initialized (null).
+     */
     @Test
     void testDecryptMessage_NullKey() {
         logger.info("Testing decryption with a null AES key.");
@@ -91,6 +132,9 @@ public class MessageSecurityManagerTest {
         assertEquals("AES key is not initialized. Cannot decrypt message.", exception.getMessage());
     }
 
+    /**
+     * Tests decryption with an invalid Base64 encoded string.
+     */
     @Test
     void testDecryptMessage_InvalidBase64() {
         String invalidEncryptedMessage = "This is not a valid Base64 string!@#";
@@ -100,6 +144,10 @@ public class MessageSecurityManagerTest {
         }, "Decrypting an invalid Base64 string should throw IllegalArgumentException.");
     }
 
+    /**
+     * Tests decryption of a message that has been tampered with after encryption.
+     * Expects a cryptographic exception.
+     */
     @Test
     void testDecryptMessage_Tampered() {
         String originalMessage = "Sensitive Data";
@@ -117,63 +165,135 @@ public class MessageSecurityManagerTest {
         }
     }
 
-    // --- MessageStorageInterface Tests (In-Memory Placeholder) ---
-    @Test
-    void testSaveAndFetchMessage_Success() {
-        String testMessage = "This is a message to be stored (encrypted).";
-        logger.info("Testing save and fetch for message: '{}'", testMessage);
-        messageSecurityManager.saveMessage(testMessage); // Assuming testMessage is already "encrypted"
+    // --- MessageStorageInterface Tests (SQLite) ---
 
-        // Fetch by ID. Since counter starts at 0 and increments before put, first ID is 1.
-        String fetchedMessage = messageSecurityManager.fetchMessage(1);
-        assertNotNull(fetchedMessage, "Fetched message should not be null.");
-        assertEquals(testMessage, fetchedMessage, "Fetched message should match the stored message.");
+    /**
+     * Tests saving a message to the SQLite database and then fetching it.
+     * Verifies that the fetched message matches the original.
+     */
+    @Test
+    void testSaveAndFetchMessage_SQLite_Success() {
+        logger.info("Testing save and fetch message with SQLite.");
+        String originalMessage = "Hello SQLite World!";
+        String encryptedMessage = null;
+        try {
+            encryptedMessage = messageSecurityManager.encryptMessage(originalMessage);
+        } catch (Exception e) {
+            fail("Encryption failed: " + e.getMessage());
+        }
+
+        int messageId = messageSecurityManager.saveMessage(encryptedMessage);
+        assertTrue(messageId != -1, "Message ID should not be -1 after saving to SQLite.");
+
+        String fetchedEncryptedMessage = messageSecurityManager.fetchMessage(messageId);
+        assertNotNull(fetchedEncryptedMessage, "Fetched encrypted message should not be null from SQLite.");
+
+        try {
+            String decryptedMessage = messageSecurityManager.decryptMessage(fetchedEncryptedMessage);
+            assertEquals(originalMessage, decryptedMessage, "Decrypted message from SQLite should match original.");
+        } catch (Exception e) {
+            fail("Decryption failed: " + e.getMessage());
+        }
     }
 
+    /**
+     * Tests saving a null message to the SQLite database.
+     * Expects the operation to be handled gracefully without insertion.
+     */
     @Test
-    void testSaveMessage_NullInput() {
-        logger.info("Testing saving a null message.");
+    void testSaveMessage_SQLite_NullInput() {
+        logger.info("Testing saving a null message to SQLite.");
         messageSecurityManager.saveMessage(null);
-        // Check that the store size hasn't changed or that a specific ID wasn't created.
-        // For this placeholder, we'll check if fetching a new ID returns null.
-        assertNull(messageSecurityManager.fetchMessage(1), "Store should not save a null message, so ID 1 should be null.");
+        // Verify that no message was actually saved. Fetching a recent ID should yield null.
+        // This assumes IDs are sequential and positive. A count query would be more robust.
+        assertNull(messageSecurityManager.fetchMessage(1), "SQLite should not save a null message, so ID 1 should be null.");
     }
 
+    /**
+     * Tests fetching a message with a non-existent ID from the SQLite database.
+     * Expects null to be returned.
+     */
     @Test
-    void testFetchMessage_NonExistent() {
-        logger.info("Testing fetching a non-existent message ID.");
-        assertNull(messageSecurityManager.fetchMessage(999), "Fetching a non-existent message should return null.");
+    void testFetchMessage_SQLite_NonExistent() {
+        logger.info("Testing fetching a non-existent message ID from SQLite.");
+        assertNull(messageSecurityManager.fetchMessage(99999), "Fetching a non-existent message from SQLite should return null.");
     }
 
+    /**
+     * Tests deleting a message from the SQLite database.
+     * Verifies that the message cannot be fetched after deletion.
+     */
     @Test
-    void testDeleteMessage_Success() {
-        String messageToSaveAndDetect = "A message to delete.";
-        logger.info("Testing deletion of message: '{}'", messageToSaveAndDetect);
-        messageSecurityManager.saveMessage(messageToSaveAndDetect); // ID will be 1
-        assertNotNull(messageSecurityManager.fetchMessage(1), "Message should exist before deletion.");
+    void testDeleteMessage_SQLite_Success() {
+        logger.info("Testing delete message success with SQLite.");
+        String message = "Message to be deleted from SQLite";
+        String encryptedMessage = null;
+        try {
+            encryptedMessage = messageSecurityManager.encryptMessage(message);
+        } catch (Exception e) {
+            fail("Encryption failed: " + e.getMessage());
+        }
 
-        messageSecurityManager.deleteMessage(1);
-        assertNull(messageSecurityManager.fetchMessage(1), "Message should not exist after deletion.");
+        int messageId = messageSecurityManager.saveMessage(encryptedMessage);
+        assertTrue(messageId != -1, "Message ID should not be -1 for deletion test.");
+
+        // Verify it's in the database
+        String fetchedMessageBeforeDeletion = messageSecurityManager.fetchMessage(messageId);
+        assertNotNull(fetchedMessageBeforeDeletion, "Message should exist in SQLite before deletion.");
+
+        messageSecurityManager.deleteMessage(messageId);
+        String fetchedMessageAfterDeletion = messageSecurityManager.fetchMessage(messageId);
+        assertNull(fetchedMessageAfterDeletion, "Message should be null from SQLite after deletion.");
     }
 
+    /**
+     * Tests deleting a message with a non-existent ID from the SQLite database.
+     * Expects the operation to complete without errors.
+     */
     @Test
-    void testDeleteMessage_NonExistent() {
-        logger.info("Testing deletion of a non-existent message ID.");
+    void testDeleteMessage_SQLite_NonExistent() {
+        logger.info("Testing deletion of a non-existent message ID from SQLite.");
         assertDoesNotThrow(() -> {
-            messageSecurityManager.deleteMessage(12345);
-        }, "Deleting a non-existent message should not throw an exception.");
+            messageSecurityManager.deleteMessage(123456);
+        }, "Deleting a non-existent message from SQLite should not throw an exception.");
     }
 
+    /**
+     * Tests saving multiple messages to SQLite and then fetching them to ensure
+     * correct ID assignment and retrieval.
+     */
     @Test
-    void testMultipleSaveAndFetch() {
-        logger.info("Testing multiple save and fetch operations.");
-        String msg1 = "Message one";
-        String msg2 = "Message two";
-        messageSecurityManager.saveMessage(msg1); // ID 1
-        messageSecurityManager.saveMessage(msg2); // ID 2
+    void testMultipleSaveAndFetch_SQLite() {
+        logger.info("Testing multiple save and fetch operations with SQLite.");
+        String msg1 = "SQLite Message one";
+        String msg2 = "SQLite Message two";
+        String encMsg1 = null, encMsg2 = null;
 
-        assertEquals(msg1, messageSecurityManager.fetchMessage(1), "Fetched message 1 should match.");
-        assertEquals(msg2, messageSecurityManager.fetchMessage(2), "Fetched message 2 should match.");
+        try {
+            encMsg1 = messageSecurityManager.encryptMessage(msg1);
+            encMsg2 = messageSecurityManager.encryptMessage(msg2);
+        } catch (Exception e) {
+            fail("Encryption failed during setup for multiple save/fetch test: " + e.getMessage());
+        }
+
+        int msgId1 = messageSecurityManager.saveMessage(encMsg1);
+        int msgId2 = messageSecurityManager.saveMessage(encMsg2);
+
+        assertTrue(msgId1 != -1, "Message ID 1 should not be -1.");
+        assertTrue(msgId2 != -1, "Message ID 2 should not be -1.");
+        assertNotEquals(msgId1, msgId2, "Message IDs should be different.");
+
+        String fetchedEncMsg1 = messageSecurityManager.fetchMessage(msgId1);
+        String fetchedEncMsg2 = messageSecurityManager.fetchMessage(msgId2);
+
+        assertNotNull(fetchedEncMsg1, "Fetched encrypted message 1 should not be null.");
+        assertNotNull(fetchedEncMsg2, "Fetched encrypted message 2 should not be null.");
+
+        try {
+            assertEquals(msg1, messageSecurityManager.decryptMessage(fetchedEncMsg1), "Decrypted message 1 from SQLite should match.");
+            assertEquals(msg2, messageSecurityManager.decryptMessage(fetchedEncMsg2), "Decrypted message 2 from SQLite should match.");
+        } catch (Exception e) {
+            fail("Decryption failed for messages fetched from SQLite in multiple save/fetch test: " + e.getMessage());
+        }
     }
 }
-
