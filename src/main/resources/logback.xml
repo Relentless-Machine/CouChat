@@ -6,8 +6,12 @@
         </encoder>
     </appender>
 
+    <!-- Logger for ice4j -->
+    <logger name="org.ice4j" level="TRACE" additivity="false">
+        <appender-ref ref="CONSOLE" />
+    </logger>
+
     <root level="INFO">
         <appender-ref ref="CONSOLE" />
     </root>
 </configuration>
-

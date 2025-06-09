@@ -9,57 +9,72 @@ import java.sql.*;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
-// TODO: Implement OAuth 2.0 client flow for Microsoft & Google
-// TODO: Implement device passkey generation, storage (securely), and validation
-// TODO: Integrate with a database (SQLite as per SDD) for storing user and device information
-
+/**
+ * Manages user authentication, including username/password, OAuth 2.0 (simulated),
+ * and device passkey binding.
+ * Interacts with an SQLite database to store user and device information.
+ */
 public class AuthenticationManager implements AuthenticationInterface {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthenticationManager.class);
-    private static final String DB_URL = "jdbc:sqlite:couchat_storage.db"; // Same DB as MessageSecurityManager
+    private static final String DB_URL = "jdbc:sqlite:couchat_storage.db";
 
-    private final Map<String, Boolean> loggedInUsers = new HashMap<>(); // username -> isLoggedIn (placeholder)
+    // In-memory store for logged-in user sessions (username -> isLoggedIn)
+    // For a real application, this should be replaced with a more robust session management mechanism.
+    private final Map<String, Boolean> loggedInUsers = new HashMap<>();
 
+    /**
+     * Constructs an AuthenticationManager and initializes the database tables if they don't exist.
+     * Also ensures a default test user is present for testing purposes.
+     */
     public AuthenticationManager() {
         initializeDatabaseTables();
-        // Ensure the default test user exists with the correct password for tests
         addUserToDbIfNotExists("testuser", "password123");
     }
 
     /**
-     * 初始化数据库表，创建用户和设备表（如果它们不存在）
+     * Initializes the necessary database tables (users, devices) if they do not already exist.
+     * This method defines the schema for user accounts and their associated devices.
      */
     private void initializeDatabaseTables() {
+        String createUserTableSql = "CREATE TABLE IF NOT EXISTS users (" +
+                "user_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "username TEXT UNIQUE NOT NULL, " +
+                "password_hash TEXT, " +
+                "oauth_provider TEXT, " +
+                "oauth_id TEXT, " +
+                "UNIQUE (oauth_provider, oauth_id)" +
+                ")";
+
+        String createDeviceTableSql = "CREATE TABLE IF NOT EXISTS devices (" +
+                "device_id TEXT PRIMARY KEY, " +
+                "user_id INTEGER NOT NULL, " +
+                "passkey_hash TEXT, " +
+                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+                "FOREIGN KEY (user_id) REFERENCES users(user_id)" +
+                ")";
+
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement()) {
-            // 创建用户表，存储用户基本信息和OAuth认证信息
-            stmt.execute("CREATE TABLE IF NOT EXISTS users (" +
-                    "user_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                    "username TEXT UNIQUE, " +
-                    "password_hash TEXT, " +
-                    "oauth_provider TEXT, " +
-                    "oauth_id TEXT, " +
-                    "oauth_token TEXT)");
-
-            // 创建设备表，存储设备ID和绑定的设备密钥
-            stmt.execute("CREATE TABLE IF NOT EXISTS devices (" +
-                    "device_id TEXT PRIMARY KEY, " +
-                    "user_id INTEGER, " +
-                    "passkey_hash TEXT, " +
-                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
-                    "FOREIGN KEY (user_id) REFERENCES users(user_id))");
-
-            logger.info("Database tables initialized successfully");
+            stmt.execute(createUserTableSql);
+            logger.info("Ensured 'users' table exists.");
+            stmt.execute(createDeviceTableSql);
+            logger.info("Ensured 'devices' table exists.");
         } catch (SQLException e) {
             logger.error("Error initializing database tables", e);
+            // Consider re-throwing as a runtime exception if the application cannot proceed
+            // throw new RuntimeException("Failed to initialize database tables", e);
         }
     }
 
     /**
-     * 如果用户不存在，则添加用户到数据库
-     * @param username 用户名
-     * @param password 密码
+     * Adds a new user to the database if they do not already exist.
+     * Primarily used for setting up default users or test accounts.
+     *
+     * @param username The username of the user to add.
+     * @param password The plain-text password for the user (will be hashed before storage).
      */
     private void addUserToDbIfNotExists(String username, String password) {
         if (username == null || username.trim().isEmpty() ||
@@ -68,299 +83,310 @@ public class AuthenticationManager implements AuthenticationInterface {
             return;
         }
 
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-            // 首先检查用户是否存在
-            String checkSql = "SELECT user_id FROM users WHERE username = ?";
-            try (PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
-                checkStmt.setString(1, username);
-                try (ResultSet rs = checkStmt.executeQuery()) {
-                    if (!rs.next()) {
-                        // 用户不存在，添加新用户
-                        String insertSql = "INSERT INTO users (username, password_hash) VALUES (?, ?)";
-                        try (PreparedStatement insertStmt = conn.prepareStatement(insertSql)) {
-                            insertStmt.setString(1, username);
-                            insertStmt.setString(2, hashPassword(password));
-                            insertStmt.executeUpdate();
+        String checkSql = "SELECT user_id FROM users WHERE username = ?";
+        String insertSql = "INSERT INTO users (username, password_hash) VALUES (?, ?)";
+
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
+
+            checkStmt.setString(1, username);
+            try (ResultSet rs = checkStmt.executeQuery()) {
+                if (!rs.next()) { // User does not exist, proceed to add
+                    try (PreparedStatement insertStmt = conn.prepareStatement(insertSql)) {
+                        insertStmt.setString(1, username);
+                        insertStmt.setString(2, hashPassword(password));
+                        int affectedRows = insertStmt.executeUpdate();
+                        if (affectedRows > 0) {
                             logger.info("Added new user: {}", username);
+                        } else {
+                            logger.warn("Failed to add new user: {} (no rows affected)", username);
                         }
-                    } else {
-                        logger.info("User '{}' already exists. Skipping.", username);
+                    }
+                } else {
+                    logger.debug("User '{}' already exists. Skipping addition.", username);
+                }
+            }
+        } catch (SQLException e) {
+            logger.error("Error adding user '{}' to database", username, e);
+        }
+    }
+
+    /**
+     * Hashes a given password using SHA-256.
+     *
+     * @param password The plain-text password to hash.
+     * @return The Base64 encoded string of the hashed password, or null if hashing fails.
+     */
+    String hashPassword(String password) {
+        if (password == null) return null;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashedBytes = digest.digest(password.getBytes());
+            return Base64.getEncoder().encodeToString(hashedBytes);
+        } catch (NoSuchAlgorithmException e) {
+            logger.error("Error hashing password: SHA-256 algorithm not found.", e);
+            return null; // Or throw a runtime exception
+        }
+    }
+
+    /**
+     * Authenticates a user based on their username and password.
+     * Compares the hash of the provided password with the stored hash.
+     *
+     * @param username The username.
+     * @param password The password.
+     */
+    @Override
+    public void authenticateUser(String username, String password) {
+        logger.debug("Attempting to authenticate user: {}", username);
+        if (username == null || username.trim().isEmpty() ||
+            password == null || password.trim().isEmpty()) {
+            logger.warn("Authentication failed for user '{}': username or password is null or empty.", username);
+            return;
+        }
+
+        String sql = "SELECT password_hash FROM users WHERE username = ?";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, username);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    String storedHash = rs.getString("password_hash");
+                    String inputHash = hashPassword(password);
+                    if (storedHash != null && storedHash.equals(inputHash)) {
+                        loggedInUsers.put(username, true);
+                        logger.info("User '{}' authenticated successfully via password.", username);
+                        return;
                     }
                 }
             }
+        } catch (SQLException e) {
+            logger.error("Database error during password authentication for user: {}", username, e);
+        }
+        logger.warn("Authentication failed for user: {} (password mismatch or user not found).", username);
+    }
 
-            // 为测试用户添加OAuth条目
-            if ("testuser".equals(username)) {
-                String oauthCheckSql = "SELECT user_id FROM users WHERE username = ? AND oauth_id IS NOT NULL";
-                try (PreparedStatement oauthCheckStmt = conn.prepareStatement(oauthCheckSql)) {
-                    oauthCheckStmt.setString(1, username);
-                    try (ResultSet rs = oauthCheckStmt.executeQuery()) {
-                        if (!rs.next()) {
-                            String updateOauthSql = "UPDATE users SET oauth_provider = ?, oauth_id = ? WHERE username = ?";
-                            try (PreparedStatement updateStmt = conn.prepareStatement(updateOauthSql)) {
-                                updateStmt.setString(1, "TEST_PROVIDER");
-                                updateStmt.setString(2, "testuser_oauth_id_from_db");
-                                updateStmt.setString(3, username);
-                                updateStmt.executeUpdate();
-                                logger.info("Added OAuth info for test user: {}", username);
+    /**
+     * Authenticates a user using a simulated OAuth token.
+     * For prototype purposes, the token is expected to be in the format "PROVIDER:ID".
+     * If the user doesn't exist, a new user account is created based on the OAuth information.
+     *
+     * @param oauthToken A simulated OAuth token, e.g., "GOOGLE:user12345" or "MICROSOFT:abcdef".
+     */
+    @Override
+    public void authenticateWithOAuth(String oauthToken) {
+        logger.debug("Attempting to authenticate with OAuth token (first 15 chars): {}",
+            (oauthToken != null && oauthToken.length() > 15) ? oauthToken.substring(0, 15) + "..." : oauthToken);
+
+        if (oauthToken == null || oauthToken.trim().isEmpty()) {
+            logger.warn("OAuth authentication failed: token is null or empty.");
+            return;
+        }
+
+        String[] parts = oauthToken.split(":", 2);
+        if (parts.length != 2) {
+            logger.warn("OAuth authentication failed: token format is invalid. Expected 'PROVIDER:ID'. Token: {}", oauthToken);
+            return;
+        }
+
+        String provider = parts[0].toUpperCase(); // Normalize provider name
+        String oauthId = parts[1];
+
+        if (provider.isEmpty() || oauthId.isEmpty()) {
+            logger.warn("OAuth authentication failed: provider or ID is empty in token. Token: {}", oauthToken);
+            return;
+        }
+
+        String findUserSql = "SELECT user_id, username FROM users WHERE oauth_provider = ? AND oauth_id = ?";
+        String insertUserSql = "INSERT INTO users (username, oauth_provider, oauth_id) VALUES (?, ?, ?)";
+        String generatedUsername = provider.toLowerCase() + "_" + oauthId; // e.g., google_user12345
+
+        try (Connection conn = DriverManager.getConnection(DB_URL)) {
+            try (PreparedStatement findStmt = conn.prepareStatement(findUserSql)) {
+                findStmt.setString(1, provider);
+                findStmt.setString(2, oauthId);
+                try (ResultSet rs = findStmt.executeQuery()) {
+                    if (rs.next()) { // User found
+                        String existingUsername = rs.getString("username");
+                        loggedInUsers.put(existingUsername, true);
+                        logger.info("User '{}' (OAuth ID: {}) authenticated successfully via {} OAuth.", existingUsername, oauthId, provider);
+                    } else { // User not found, create new user
+                        logger.info("OAuth user {} from {} not found. Creating new user: {}", oauthId, provider, generatedUsername);
+                        try (PreparedStatement insertStmt = conn.prepareStatement(insertUserSql, Statement.RETURN_GENERATED_KEYS)) {
+                            insertStmt.setString(1, generatedUsername);
+                            insertStmt.setString(2, provider);
+                            insertStmt.setString(3, oauthId);
+                            int affectedRows = insertStmt.executeUpdate();
+                            if (affectedRows > 0) {
+                                // Optional: retrieve generated user_id if needed
+                                // try (ResultSet generatedKeys = insertStmt.getGeneratedKeys()) { ... }
+                                loggedInUsers.put(generatedUsername, true);
+                                logger.info("New user '{}' created and authenticated via {} OAuth (ID: {}).", generatedUsername, provider, oauthId);
+                            } else {
+                                logger.error("Failed to create new OAuth user '{}' (ID: {} from {}). No rows affected.", generatedUsername, oauthId, provider);
                             }
                         }
                     }
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error adding user to database: {}", username, e);
-        }
-    }
-
-    String hashPassword(String password) { // Changed to package-private for testing
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hashedBytes = digest.digest(password.getBytes());
-            return Base64.getEncoder().encodeToString(hashedBytes);
-        } catch (NoSuchAlgorithmException e) {
-            logger.error("Error hashing password", e);
-            return null;
+            logger.error("Database error during OAuth authentication for provider '{}', ID '{}'", provider, oauthId, e);
         }
     }
 
     /**
-     * 使用用户名和密码进行认证
-     * @param username 用户名
-     * @param password 密码
-     */
-    @Override
-    public void authenticateUser(String username, String password) {
-        logger.info("Attempting to authenticate user: {}", username);
-
-        if (username == null || username.trim().isEmpty() ||
-            password == null || password.trim().isEmpty()) {
-            logger.warn("Authentication failed: username or password is null or empty");
-            return;
-        }
-
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-            String sql = "SELECT password_hash FROM users WHERE username = ?";
-            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setString(1, username);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (rs.next()) {
-                        String storedHash = rs.getString("password_hash");
-                        String inputHash = hashPassword(password);
-
-                        if (storedHash != null && inputHash != null && storedHash.equals(inputHash)) {
-                            // 密码匹配，认证成功
-                            loggedInUsers.put(username, true);
-                            logger.info("User '{}' authenticated successfully", username);
-                            return;
-                        }
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            logger.error("Error during database authentication for user: {}", username, e);
-        }
-
-        // 如果到达此处，认证失败
-        logger.warn("Authentication failed for user: {}", username);
-    }
-
-    @Override
-    public void authenticateWithOAuth(String oauthToken) {
-        logger.info("Attempting to authenticate with OAuth token (first few chars): {}",
-            oauthToken != null && oauthToken.length() > 10 ? oauthToken.substring(0, 10) + "..." : oauthToken);
-        if (oauthToken == null || oauthToken.trim().isEmpty()) {
-            logger.warn("OAuth authentication failed: token is null or empty.");
-            return;
-        }
-
-        // Adjusted token check to match the test case
-        if (oauthToken.startsWith("valid_oauth_token_for_testuser")) {
-            String oauthProvider = "TEST_PROVIDER";
-            String oauthId = "testuser_oauth_id_from_token"; // Made distinct from DB specific one
-            String usernameFromOAuth = "test_oauth_user";
-
-            String sqlCheck = "SELECT user_id, username FROM users WHERE oauth_provider = ? AND oauth_id = ?";
-            try (Connection conn = DriverManager.getConnection(DB_URL);
-                 PreparedStatement stmt = conn.prepareStatement(sqlCheck)) {
-                stmt.setString(1, oauthProvider);
-                stmt.setString(2, oauthId);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (rs.next()) {
-                        int userId = rs.getInt("user_id");
-                        String username = rs.getString("username");
-                        logger.info("OAuth authentication successful for user: {}", username);
-                        loggedInUsers.put(username, true);
-                    } else {
-                        logger.warn("OAuth authentication failed: no matching user found in DB.");
-                    }
-                }
-            } catch (SQLException e) {
-                logger.error("Error during DB OAuth processing for token starting with {}",
-                    (oauthToken != null && oauthToken.length() >=10 ? oauthToken.substring(0,10) : oauthToken), e);
-            }
-        } else {
-            logger.warn("OAuth authentication failed: token does not match expected prefix.");
-        }
-
-        // 为测试用例添加硬编码的OAuth认证成功逻辑
-        if (oauthToken.startsWith("valid_oauth_token_for_testuser")) {
-            loggedInUsers.put("test_oauth_user", true);
-        }
-    }
-
-    /**
-     * 绑定设备密钥
-     * @param deviceId 设备ID
-     * @param passkey 设备密钥
+     * Binds a device passkey to the currently logged-in user.
+     * The passkey is hashed before being stored.
+     *
+     * @param deviceId The unique identifier for the device.
+     * @param passkey  The passkey string to bind (will be hashed).
      */
     @Override
     public void bindDevicePasskey(String deviceId, String passkey) {
-        logger.info("Attempting to bind device passkey for device: {}", deviceId);
-
-        // 检查参数有效性
+        logger.debug("Attempting to bind device passkey for device: {}", deviceId);
         if (deviceId == null || deviceId.trim().isEmpty() ||
             passkey == null || passkey.trim().isEmpty()) {
-            logger.warn("Cannot bind device passkey: deviceId or passkey is null or empty");
+            logger.warn("Cannot bind device passkey: deviceId or passkey is null or empty.");
             return;
         }
 
-        // 检查是否有已登录的用户
-        boolean anyUserLoggedIn = !loggedInUsers.isEmpty() && loggedInUsers.containsValue(true);
-        if (!anyUserLoggedIn) {
-            logger.warn("Cannot bind device passkey: no user is logged in");
+        Optional<String> loggedInUsernameOpt = getFirstLoggedInUsername();
+        if (loggedInUsernameOpt.isEmpty()) {
+            logger.warn("Cannot bind device passkey for device '{}': No user is currently logged in.", deviceId);
+            return;
+        }
+        String loggedInUsername = loggedInUsernameOpt.get();
+
+        Optional<Integer> userIdOpt = getUserIdByUsername(loggedInUsername);
+        if (userIdOpt.isEmpty()) {
+            logger.warn("Cannot bind device passkey for device '{}': Logged in user '{}' not found in database.", deviceId, loggedInUsername);
+            return;
+        }
+        int userId = userIdOpt.get();
+
+        String passkeyHash = hashPassword(passkey);
+        if (passkeyHash == null) {
+            logger.error("Cannot bind device passkey for device '{}': Passkey hashing failed.", deviceId);
             return;
         }
 
-        // 获取第一个登录用户的ID
-        String loggedInUsername = getFirstLoggedInUsername();
-        int userId = getUserIdByUsername(loggedInUsername);
-        if (userId == -1) {
-            logger.warn("Cannot bind device passkey: logged in user not found in database");
-            return;
-        }
+        String upsertSql = "INSERT INTO devices (device_id, user_id, passkey_hash) VALUES (?, ?, ?) " +
+                           "ON CONFLICT(device_id) DO UPDATE SET user_id = excluded.user_id, passkey_hash = excluded.passkey_hash";
 
-        // 哈希密钥并存储
-        String passkey_hash = hashPassword(passkey);
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-            // 检查设备是否已存在，如果存在则更新，否则插入新记录
-            String checkSql = "SELECT device_id FROM devices WHERE device_id = ?";
-            try (PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
-                checkStmt.setString(1, deviceId);
-                try (ResultSet rs = checkStmt.executeQuery()) {
-                    if (rs.next()) {
-                        // 设备存在，更新密钥哈希
-                        String updateSql = "UPDATE devices SET user_id = ?, passkey_hash = ? WHERE device_id = ?";
-                        try (PreparedStatement updateStmt = conn.prepareStatement(updateSql)) {
-                            updateStmt.setInt(1, userId);
-                            updateStmt.setString(2, passkey_hash);
-                            updateStmt.setString(3, deviceId);
-                            updateStmt.executeUpdate();
-                            logger.info("Updated passkey for device: {}", deviceId);
-                        }
-                    } else {
-                        // 设备不存在，插入新记录
-                        String insertSql = "INSERT INTO devices (device_id, user_id, passkey_hash) VALUES (?, ?, ?)";
-                        try (PreparedStatement insertStmt = conn.prepareStatement(insertSql)) {
-                            insertStmt.setString(1, deviceId);
-                            insertStmt.setInt(2, userId);
-                            insertStmt.setString(3, passkey_hash);
-                            insertStmt.executeUpdate();
-                            logger.info("Bound new device: {} to user: {}", deviceId, loggedInUsername);
-                        }
-                    }
-                }
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement stmt = conn.prepareStatement(upsertSql)) {
+            stmt.setString(1, deviceId);
+            stmt.setInt(2, userId);
+            stmt.setString(3, passkeyHash);
+            int affectedRows = stmt.executeUpdate();
+            if (affectedRows > 0) {
+                 logger.info("Successfully bound/updated passkey for device '{}' to user '{}' (ID: {}).", deviceId, loggedInUsername, userId);
+            } else {
+                // This case might not be reached with ON CONFLICT DO UPDATE if the device_id exists,
+                // as it would update. If it doesn't exist, it inserts.
+                // A 0 affectedRows might indicate an issue if the insert/update was expected but didn't happen.
+                logger.warn("Binding/updating passkey for device '{}' resulted in 0 affected rows. Check DB state or SQL logic.", deviceId);
             }
         } catch (SQLException e) {
-            logger.error("Error binding device passkey for device: {}", deviceId, e);
+            logger.error("Database error binding device passkey for device: {}", deviceId, e);
         }
     }
 
     /**
-     * 获取第一个登录的用户名
-     * @return 登录用户名，如果没有用户登录则返回null
+     * Retrieves the first username found in the in-memory logged-in users map.
+     * This is a simplistic approach for prototype purposes.
+     *
+     * @return An {@link Optional} containing the username if a user is logged in, otherwise empty.
      */
-    private String getFirstLoggedInUsername() {
-        for (Map.Entry<String, Boolean> entry : loggedInUsers.entrySet()) {
-            if (entry.getValue()) {
-                return entry.getKey();
-            }
-        }
-        return null;
+    private Optional<String> getFirstLoggedInUsername() {
+        return loggedInUsers.entrySet().stream()
+                .filter(Map.Entry::getValue) // Filter for true (logged in)
+                .map(Map.Entry::getKey)
+                .findFirst();
     }
 
     /**
-     * 获取设备绑定的密钥哈希
-     * @param deviceId 设备ID
-     * @return 密钥哈希，如果设备不存在或无绑定则返回null
+     * Retrieves the passkey hash for a given device ID.
+     *
+     * @param deviceId The unique identifier of the device.
+     * @return The stored passkey hash as a String, or null if the device is not found or has no passkey.
      */
     public String getBoundPasskeyHash(String deviceId) {
         if (deviceId == null || deviceId.trim().isEmpty()) {
-            logger.warn("Cannot get passkey hash: deviceId is null or empty");
+            logger.debug("Cannot get passkey hash: deviceId is null or empty.");
             return null;
         }
-
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-            String sql = "SELECT passkey_hash FROM devices WHERE device_id = ?";
-            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setString(1, deviceId);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (rs.next()) {
-                        return rs.getString("passkey_hash");
-                    }
+        String sql = "SELECT passkey_hash FROM devices WHERE device_id = ?";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, deviceId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("passkey_hash");
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error getting passkey hash for device: {}", deviceId, e);
+            logger.error("Database error getting passkey hash for device: {}", deviceId, e);
         }
+        logger.debug("No passkey hash found for device: {}", deviceId);
         return null;
     }
 
     /**
-     * 检查用户是否已登录
-     * @param username 用户名
-     * @return 如果用户已登录则返回true，否则返回false
+     * Checks if a user is currently marked as logged in (in-memory).
+     *
+     * @param username The username to check.
+     * @return true if the user is logged in, false otherwise.
      */
     public boolean isUserLoggedIn(String username) {
-        if (username == null) {
-            return false;
-        }
-        Boolean isLoggedIn = loggedInUsers.get(username);
-        return isLoggedIn != null && isLoggedIn;
+        if (username == null) return false;
+        return loggedInUsers.getOrDefault(username, false);
     }
 
+    /**
+     * Clears all authentication-related data, including in-memory logged-in users
+     * and database records in 'users' and 'devices' tables.
+     * Primarily intended for test environment cleanup.
+     * Re-adds the default test user after clearing.
+     */
     public void clearAllAuthentications() {
-        // This method now needs to clear DB tables for users and devices
+        logger.info("Clearing all authentication data (in-memory and DB)... ");
+        loggedInUsers.clear();
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement()) {
             stmt.execute("DELETE FROM devices");
             stmt.execute("DELETE FROM users");
-            // Reset autoincrement sequences
-            stmt.execute("DELETE FROM sqlite_sequence WHERE name='users'");
-            // No sequence for devices as device_id is primary key but not autoincrementing typically
-            logger.info("Authentication DB tables (users, devices) cleared for testing.");
+            // Reset autoincrement sequence for 'users' table if it exists and is supported by SQLite version
+            // stmt.execute("DELETE FROM sqlite_sequence WHERE name='users'"); // This might fail if table was just created or empty
+            logger.info("Cleared 'devices' and 'users' tables in the database.");
         } catch (SQLException e) {
             logger.error("Error clearing authentication DB tables", e);
         }
-        loggedInUsers.clear(); // Clear in-memory session status
-        // Re-add the default test user after clearing, so it's always available for tests that need it.
+        // Re-add the default test user so it's available for subsequent tests.
         addUserToDbIfNotExists("testuser", "password123");
+        logger.info("Default test user 'testuser' re-added after clearing authentications.");
     }
 
-    // Helper method to get user_id by username
-    private int getUserIdByUsername(String username) {
+    /**
+     * Retrieves the user_id for a given username from the database.
+     *
+     * @param username The username to search for.
+     * @return An {@link Optional} containing the user_id if found, otherwise empty.
+     */
+    private Optional<Integer> getUserIdByUsername(String username) {
+        if (username == null || username.trim().isEmpty()) return Optional.empty();
         String sql = "SELECT user_id FROM users WHERE username = ?";
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, username);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
-                    return rs.getInt("user_id");
+                    return Optional.of(rs.getInt("user_id"));
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error retrieving user_id for username: {}", username, e);
+            logger.error("Database error retrieving user_id for username: {}", username, e);
         }
-        return -1; // Return -1 if user_id not found
+        return Optional.empty();
     }
 }
