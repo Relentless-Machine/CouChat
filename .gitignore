@@ -403,3 +403,17 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Sensitive or high-churn files
+
+# Node.js / Vite / Electron specific
+couchat-frontend/node_modules/
+couchat-frontend/dist/
+couchat-frontend/release_builds/
+couchat-frontend/.vite/
+
+# Java / Maven specific
+couchat_storage.db
+
+# OS generated files
+.DS_Store?

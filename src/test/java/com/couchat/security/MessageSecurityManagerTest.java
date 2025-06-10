@@ -1,5 +1,6 @@
 package com.couchat.security;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,8 +18,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for the {@link MessageSecurityManager} class.
- * These tests cover encryption, decryption, and message storage functionalities.
- * With the introduction of SQLite, these tests now interact with a test database.
+ * These tests cover encryption, decryption, and message storage functionalities,
+ * ensuring messages are encrypted before being saved to the SQLite database.
  */
 @ExtendWith(MockitoExtension.class)
 public class MessageSecurityManagerTest {
@@ -26,12 +27,12 @@ public class MessageSecurityManagerTest {
     private static final Logger logger = LoggerFactory.getLogger(MessageSecurityManagerTest.class);
     private MessageSecurityManager messageSecurityManager;
     private SecretKey testAesKey;
-    private static final String TEST_DB_URL = "jdbc:sqlite:test_couchat_storage.db"; // Use a separate DB for tests
+    // private static final String TEST_DB_URL = "jdbc:sqlite:test_couchat_storage.db"; // Ideal, but requires DB_URL configuration in MessageSecurityManager
 
     /**
      * Sets up the test environment before each test.
-     * This includes initializing a fixed AES key for predictable encryption/decryption
-     * and ensuring the database is clean.
+     * Initializes a fixed AES key for predictable encryption/decryption
+     * and ensures the messages table in the database is clean.
      *
      * @throws NoSuchAlgorithmException if the AES algorithm is not available.
      */
@@ -43,18 +44,21 @@ public class MessageSecurityManagerTest {
         keyGen.init(256, secureRandom); // AES-256
         testAesKey = keyGen.generateKey();
 
-        // Point MessageSecurityManager to the test database for this test run
-        // This requires a way to configure the DB_URL, or the MessageSecurityManager
-        // needs to be refactored to accept a DB_URL or Connection provider.
-        // For now, we'll assume MessageSecurityManager uses its default DB_URL,
-        // and clearInMemoryStore() will target that. For true isolation, a test-specific DB is better.
-        // Let's modify MessageSecurityManager to allow DB_URL override for tests or use a test-specific instance.
-        // For simplicity in this step, we will rely on the clearInMemoryStore to clean the default DB.
-        // However, the ideal approach is to use a dedicated test database.
-        messageSecurityManager = new MessageSecurityManager(testAesKey); // This will use the default DB_URL
-        messageSecurityManager.clearInMemoryStore(); // This now clears the SQLite 'messages' table
-        logger.info("Test AES key initialized and MessageSecurityManager (using SQLite) reset for test.");
+        messageSecurityManager = new MessageSecurityManager(testAesKey);
+        messageSecurityManager.clearMessagesTable(); // Clears the SQLite 'messages' table
+        logger.info("Test AES key initialized and MessageSecurityManager (SQLite messages table) reset for test.");
     }
+
+    /**
+     * Cleans up after each test.
+     */
+    @AfterEach
+    void tearDown() {
+        // messageSecurityManager.clearMessagesTable(); // Optionally clear again
+        logger.info("Test finished.");
+    }
+
+    // --- Encryption/Decryption Tests (Remain Largely Unchanged) ---
 
     /**
      * Tests successful encryption and decryption of a message.
@@ -120,10 +124,10 @@ public class MessageSecurityManagerTest {
         logger.info("Testing decryption with a null AES key.");
         MessageSecurityManager managerWithNullKey = new MessageSecurityManager(null);
         Exception exception = assertThrows(IllegalStateException.class, () -> {
-            // Encrypt something first to get a valid encrypted string format, though not with this manager
             String dummyEncryptedMessage = null;
             try {
-                dummyEncryptedMessage = messageSecurityManager.encryptMessage("dummy"); // Use valid manager for this
+                // Use the valid manager to encrypt a dummy message for testing decryption with null key
+                dummyEncryptedMessage = messageSecurityManager.encryptMessage("dummy");
             } catch (Exception e) {
                 fail("Setup for dummy encrypted message failed: " + e.getMessage());
             }
@@ -165,49 +169,97 @@ public class MessageSecurityManagerTest {
         }
     }
 
-    // --- MessageStorageInterface Tests (SQLite) ---
+    // --- MessageStorageInterface Tests (SQLite) - Updated for new saveMessage logic ---
 
     /**
-     * Tests saving a message to the SQLite database and then fetching it.
-     * Verifies that the fetched message matches the original.
+     * Tests saving a plain text message to SQLite (which encrypts it internally)
+     * and then fetching and decrypting it.
      */
     @Test
-    void testSaveAndFetchMessage_SQLite_Success() {
-        logger.info("Testing save and fetch message with SQLite.");
-        String originalMessage = "Hello SQLite World!";
-        String encryptedMessage = null;
-        try {
-            encryptedMessage = messageSecurityManager.encryptMessage(originalMessage);
-        } catch (Exception e) {
-            fail("Encryption failed: " + e.getMessage());
-        }
+    void testSaveAndFetchMessage_EncryptsInternally_SQLite_Success() {
+        logger.info("Testing save (with internal encryption) and fetch message with SQLite.");
+        String originalMessage = "Hello SQLite World! This will be encrypted by saveMessage.";
+        int senderId = 101;
+        int receiverId = 102;
 
-        int messageId = messageSecurityManager.saveMessage(encryptedMessage);
+        int messageId = messageSecurityManager.saveMessage(originalMessage, senderId, receiverId);
         assertTrue(messageId != -1, "Message ID should not be -1 after saving to SQLite.");
 
         String fetchedEncryptedMessage = messageSecurityManager.fetchMessage(messageId);
         assertNotNull(fetchedEncryptedMessage, "Fetched encrypted message should not be null from SQLite.");
+        assertNotEquals(originalMessage, fetchedEncryptedMessage,
+            "Fetched content from DB should be encrypted, not plain text.");
 
         try {
             String decryptedMessage = messageSecurityManager.decryptMessage(fetchedEncryptedMessage);
-            assertEquals(originalMessage, decryptedMessage, "Decrypted message from SQLite should match original.");
+            assertEquals(originalMessage, decryptedMessage, "Decrypted message from SQLite should match the original plain text.");
         } catch (Exception e) {
-            fail("Decryption failed: " + e.getMessage());
+            fail("Decryption of fetched message failed: " + e.getMessage());
         }
     }
 
     /**
-     * Tests saving a null message to the SQLite database.
-     * Expects the operation to be handled gracefully without insertion.
+     * Tests saving a pre-encrypted message using savePreEncryptedMessage.
      */
     @Test
-    void testSaveMessage_SQLite_NullInput() {
-        logger.info("Testing saving a null message to SQLite.");
-        messageSecurityManager.saveMessage(null);
-        // Verify that no message was actually saved. Fetching a recent ID should yield null.
-        // This assumes IDs are sequential and positive. A count query would be more robust.
-        assertNull(messageSecurityManager.fetchMessage(1), "SQLite should not save a null message, so ID 1 should be null.");
+    void testSavePreEncryptedMessage_SQLite_Success() {
+        logger.info("Testing savePreEncryptedMessage with SQLite.");
+        String originalMessage = "This is a pre-encrypted test.";
+        String preEncryptedMessage = null;
+        try {
+            preEncryptedMessage = messageSecurityManager.encryptMessage(originalMessage); // Encrypt it first
+        } catch (Exception e) {
+            fail("Encryption failed during test setup: " + e.getMessage());
+        }
+
+        int senderId = 201;
+        int receiverId = 202;
+        int messageId = messageSecurityManager.savePreEncryptedMessage(preEncryptedMessage, senderId, receiverId, true);
+        assertTrue(messageId != -1, "Message ID should not be -1 after saving pre-encrypted message.");
+
+        String fetchedEncryptedMessage = messageSecurityManager.fetchMessage(messageId);
+        assertEquals(preEncryptedMessage, fetchedEncryptedMessage, "Fetched message should match the pre-encrypted message.");
+
+        try {
+            String decryptedMessage = messageSecurityManager.decryptMessage(fetchedEncryptedMessage);
+            assertEquals(originalMessage, decryptedMessage, "Decrypted pre-encrypted message should match original.");
+        } catch (Exception e) {
+            fail("Decryption of pre-encrypted message failed: " + e.getMessage());
+        }
     }
+
+
+    /**
+     * Tests saving a null message using the new saveMessage(String, int, int) method.
+     * Expects the operation to return -1 and not save anything.
+     */
+    @Test
+    void testSaveMessage_SQLite_NullInput_NewMethod() {
+        logger.info("Testing saving a null message to SQLite using new saveMessage method.");
+        int messageId = messageSecurityManager.saveMessage(null, 1, 2);
+        assertEquals(-1, messageId, "Saving a null message should return -1.");
+    }
+
+    /**
+     * Tests saving a message with invalid senderId using the new saveMessage(String, int, int) method.
+     */
+    @Test
+    void testSaveMessage_SQLite_InvalidSenderId() {
+        logger.info("Testing saving a message with invalid senderId.");
+        int messageId = messageSecurityManager.saveMessage("Valid message", 0, 1);
+        assertEquals(-1, messageId, "Saving a message with senderId <= 0 should return -1.");
+    }
+
+    /**
+     * Tests saving a message with invalid receiverId using the new saveMessage(String, int, int) method.
+     */
+    @Test
+    void testSaveMessage_SQLite_InvalidReceiverId() {
+        logger.info("Testing saving a message with invalid receiverId.");
+        int messageId = messageSecurityManager.saveMessage("Valid message", 1, -1);
+        assertEquals(-1, messageId, "Saving a message with receiverId <= 0 should return -1.");
+    }
+
 
     /**
      * Tests fetching a message with a non-existent ID from the SQLite database.
@@ -227,17 +279,12 @@ public class MessageSecurityManagerTest {
     void testDeleteMessage_SQLite_Success() {
         logger.info("Testing delete message success with SQLite.");
         String message = "Message to be deleted from SQLite";
-        String encryptedMessage = null;
-        try {
-            encryptedMessage = messageSecurityManager.encryptMessage(message);
-        } catch (Exception e) {
-            fail("Encryption failed: " + e.getMessage());
-        }
+        int senderId = 301;
+        int receiverId = 302;
 
-        int messageId = messageSecurityManager.saveMessage(encryptedMessage);
+        int messageId = messageSecurityManager.saveMessage(message, senderId, receiverId);
         assertTrue(messageId != -1, "Message ID should not be -1 for deletion test.");
 
-        // Verify it's in the database
         String fetchedMessageBeforeDeletion = messageSecurityManager.fetchMessage(messageId);
         assertNotNull(fetchedMessageBeforeDeletion, "Message should exist in SQLite before deletion.");
 
@@ -259,29 +306,23 @@ public class MessageSecurityManagerTest {
     }
 
     /**
-     * Tests saving multiple messages to SQLite and then fetching them to ensure
-     * correct ID assignment and retrieval.
+     * Tests saving multiple messages to SQLite (which are encrypted internally)
+     * and then fetching and decrypting them to ensure correct ID assignment and retrieval.
      */
     @Test
-    void testMultipleSaveAndFetch_SQLite() {
-        logger.info("Testing multiple save and fetch operations with SQLite.");
-        String msg1 = "SQLite Message one";
-        String msg2 = "SQLite Message two";
-        String encMsg1 = null, encMsg2 = null;
+    void testMultipleSaveAndFetch_EncryptsInternally_SQLite() {
+        logger.info("Testing multiple save (with internal encryption) and fetch operations with SQLite.");
+        String msg1 = "SQLite Message one - auto encrypted";
+        String msg2 = "SQLite Message two - auto encrypted";
+        int sender1 = 401, receiver1 = 402;
+        int sender2 = 403, receiver2 = 404;
 
-        try {
-            encMsg1 = messageSecurityManager.encryptMessage(msg1);
-            encMsg2 = messageSecurityManager.encryptMessage(msg2);
-        } catch (Exception e) {
-            fail("Encryption failed during setup for multiple save/fetch test: " + e.getMessage());
-        }
-
-        int msgId1 = messageSecurityManager.saveMessage(encMsg1);
-        int msgId2 = messageSecurityManager.saveMessage(encMsg2);
+        int msgId1 = messageSecurityManager.saveMessage(msg1, sender1, receiver1);
+        int msgId2 = messageSecurityManager.saveMessage(msg2, sender2, receiver2);
 
         assertTrue(msgId1 != -1, "Message ID 1 should not be -1.");
         assertTrue(msgId2 != -1, "Message ID 2 should not be -1.");
-        assertNotEquals(msgId1, msgId2, "Message IDs should be different.");
+        assertNotEquals(msgId1, msgId2, "Message IDs should be different for distinct saves.");
 
         String fetchedEncMsg1 = messageSecurityManager.fetchMessage(msgId1);
         String fetchedEncMsg2 = messageSecurityManager.fetchMessage(msgId2);
@@ -290,10 +331,44 @@ public class MessageSecurityManagerTest {
         assertNotNull(fetchedEncMsg2, "Fetched encrypted message 2 should not be null.");
 
         try {
-            assertEquals(msg1, messageSecurityManager.decryptMessage(fetchedEncMsg1), "Decrypted message 1 from SQLite should match.");
-            assertEquals(msg2, messageSecurityManager.decryptMessage(fetchedEncMsg2), "Decrypted message 2 from SQLite should match.");
+            assertEquals(msg1, messageSecurityManager.decryptMessage(fetchedEncMsg1), "Decrypted message 1 from SQLite should match original.");
+            assertEquals(msg2, messageSecurityManager.decryptMessage(fetchedEncMsg2), "Decrypted message 2 from SQLite should match original.");
         } catch (Exception e) {
             fail("Decryption failed for messages fetched from SQLite in multiple save/fetch test: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Tests the deprecated saveMessage(String) method to ensure it still functions
+     * by calling the new savePreEncryptedMessage method with placeholder values.
+     * This test is for backward compatibility reassurance, though the method is deprecated.
+     */
+    @Test
+    void testDeprecatedSaveMessage_CallsSavePreEncrypted() {
+        logger.info("Testing deprecated saveMessage(String) method.");
+        String originalMessage = "Testing deprecated saveMessage.";
+        String preEncryptedMessage = null;
+        try {
+            preEncryptedMessage = messageSecurityManager.encryptMessage(originalMessage);
+        } catch (Exception e) {
+            fail("Encryption failed during test setup for deprecated method: " + e.getMessage());
+        }
+
+        // Call the deprecated method
+        @SuppressWarnings("deprecation")
+        int messageId = messageSecurityManager.saveMessage(preEncryptedMessage);
+        assertTrue(messageId != -1, "Deprecated saveMessage should still save and return a valid ID.");
+
+        String fetchedEncryptedMessage = messageSecurityManager.fetchMessage(messageId);
+        assertEquals(preEncryptedMessage, fetchedEncryptedMessage,
+            "Fetched message should match the pre-encrypted one saved via deprecated method.");
+
+        try {
+            String decryptedMessage = messageSecurityManager.decryptMessage(fetchedEncryptedMessage);
+            assertEquals(originalMessage, decryptedMessage,
+                "Decrypted message from deprecated save should match original.");
+        } catch (Exception e) {
+            fail("Decryption failed for message saved via deprecated method: " + e.getMessage());
         }
     }
 }

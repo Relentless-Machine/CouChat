@@ -29,11 +29,9 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   } else {
     // In production, load the index.html of the app.
-    // The path should be relative to the app's root directory after packaging.
-    // electron-builder typically puts the output in a 'dist' folder inside the packaged app.
-    // For loading local files, it's often from the root of the app package.
-    // Vite builds to 'dist' folder in the project root, which electron-builder will pick up.
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+    // Temporarily open DevTools in production build for debugging
+    mainWindow.webContents.openDevTools();
   }
 }
 
