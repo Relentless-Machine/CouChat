@@ -1,9 +1,12 @@
 // LoginForm.tsx
 import React, { useState, ChangeEvent, FormEvent } from 'react';
+import { login as loginService } from '../services/AuthService'; // Import the login service
 
 const LoginForm: React.FC = () => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false); // For loading state
+  const [loginMessage, setLoginMessage] = useState<string>(''); // For displaying login messages
 
   const handleUsernameChange = (event: ChangeEvent<HTMLInputElement>) => {
     setUsername(event.target.value);
@@ -13,15 +16,30 @@ const LoginForm: React.FC = () => {
     setPassword(event.target.value);
   };
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); // Prevent default form submission
-    console.log('Attempting login with:');
-    console.log('Username:', username);
-    console.log('Password:', password);
-    // Here you would typically call an authentication service
-    // For now, we just log to console and clear fields
-    setUsername('');
-    setPassword('');
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsLoading(true);
+    setLoginMessage(''); // Clear previous messages
+    console.log('LoginForm: Attempting login with:', username);
+
+    try {
+      const response = await loginService(username, password);
+      if (response.success) {
+        console.log('LoginForm: Login successful!', response);
+        setLoginMessage(`Login successful! Token: ${response.token || 'N/A'}`);
+        // Clear fields on successful login
+        setUsername('');
+        setPassword('');
+      } else {
+        console.warn('LoginForm: Login failed.', response);
+        setLoginMessage(`Login failed: ${response.message}`);
+      }
+    } catch (error) {
+      console.error('LoginForm: An error occurred during login:', error);
+      setLoginMessage('An error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -48,7 +66,10 @@ const LoginForm: React.FC = () => {
           required
         />
       </div>
-      <button type="submit">Login</button>
+      <button type="submit" disabled={isLoading}>
+        {isLoading ? 'Logging in...' : 'Login'}
+      </button>
+      {loginMessage && <p>{loginMessage}</p>}
     </form>
   );
 };
