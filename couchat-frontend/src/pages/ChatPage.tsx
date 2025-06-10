@@ -1,24 +1,42 @@
 // src/pages/ChatPage.tsx
-import React, { useState, ChangeEvent, FormEvent } from 'react';
+import React, { useState, ChangeEvent, FormEvent, useEffect, useRef } from 'react'; // Added useEffect, useRef
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { encryptMessageAPI, decryptMessageAPI } from '../services/MessageService'; // Import message services
+import { encryptMessageAPI, decryptMessageAPI } from '../services/MessageService';
 
-// Define a type for individual messages
 interface Message {
-  id: string; // Unique ID for each message
+  id: string;
   text: string;
-  sender: 'user' | 'other' | 'system'; // Added 'system' for status/error messages
+  sender: 'user' | 'other' | 'system-info' | 'system-error'; // More specific system message types
   timestamp: Date;
-  isEncrypted?: boolean; // Optional: to mark if the displayed text is encrypted
 }
 
 const ChatPage: React.FC = () => {
-  const { logout, userToken } = useAuth(); // Assuming userToken might be useful later
+  const { logout, userToken } = useAuth();
   const navigate = useNavigate();
   const [currentMessage, setCurrentMessage] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isSending, setIsSending] = useState<boolean>(false); // For send button loading state
+  const [isSending, setIsSending] = useState<boolean>(false);
+  const chatAreaRef = useRef<HTMLDivElement>(null); // For auto-scrolling
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (chatAreaRef.current) {
+      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const addMessageToList = (text: string, sender: Message['sender']) => {
+    setMessages(prevMessages => [
+      ...prevMessages,
+      {
+        id: Date.now().toString() + Math.random().toString(36).substring(2, 7), // More unique ID
+        text,
+        sender,
+        timestamp: new Date(),
+      },
+    ]);
+  };
 
   const handleLogout = () => {
     logout();
@@ -36,102 +54,102 @@ const ChatPage: React.FC = () => {
 
     setIsSending(true);
     const plainTextMessage = currentMessage;
-    setCurrentMessage(''); // Clear input immediately
+    setCurrentMessage('');
 
-    // 1. Display user's original message
-    const sentMessage: Message = {
-      id: Date.now().toString() + '-sent',
-      text: `You sent: ${plainTextMessage}`,
-      sender: 'user',
-      timestamp: new Date(),
-    };
-    setMessages(prevMessages => [...prevMessages, sentMessage]);
+    // 1. Display user's original message (as user)
+    addMessageToList(plainTextMessage, 'user');
 
     try {
       // 2. Encrypt the message via backend
+      addMessageToList(`Encrypting "${plainTextMessage.substring(0,20)}..."`, 'system-info');
       const encryptedText = await encryptMessageAPI(plainTextMessage);
-      const encryptedInfoMessage: Message = {
-        id: Date.now().toString() + '-encrypted',
-        text: `Encrypted: ${encryptedText.substring(0, 30)}... (Full: ${encryptedText})`,
-        sender: 'system',
-        timestamp: new Date(),
-        isEncrypted: true,
-      };
-      setMessages(prevMessages => [...prevMessages, encryptedInfoMessage]);
+      addMessageToList(`Encrypted to: ${encryptedText.substring(0, 30)}...`, 'system-info');
 
       // 3. Decrypt the message via backend (simulating receiving and decrypting)
-      try {
-        const decryptedText = await decryptMessageAPI(encryptedText);
-        const receivedMessage: Message = {
-          id: Date.now().toString() + '-decrypted',
-          text: `Simulated received (decrypted): ${decryptedText}`,
-          sender: 'other',
-          timestamp: new Date(),
-        };
-        setMessages(prevMessages => [...prevMessages, receivedMessage]);
-      } catch (decryptionError) {
-        console.error('ChatPage: Decryption failed', decryptionError);
-        const decryptErrorMessage: Message = {
-          id: Date.now().toString() + '-dec-error',
-          text: `Decryption Error: ${decryptionError instanceof Error ? decryptionError.message : 'Unknown error'}`,
-          sender: 'system',
-          timestamp: new Date(),
-        };
-        setMessages(prevMessages => [...prevMessages, decryptErrorMessage]);
-      }
+      addMessageToList(`Simulating reception & decryption of "${encryptedText.substring(0,20)}..."`, 'system-info');
+      const decryptedText = await decryptMessageAPI(encryptedText);
+      addMessageToList(`Received: ${decryptedText}`, 'other'); // Display as 'other' user
 
-    } catch (encryptionError) {
-      console.error('ChatPage: Encryption failed', encryptionError);
-      const encryptErrorMessage: Message = {
-        id: Date.now().toString() + '-enc-error',
-        text: `Encryption Error: ${encryptionError instanceof Error ? encryptionError.message : 'Unknown error'}`,
-        sender: 'system',
-        timestamp: new Date(),
-      };
-      setMessages(prevMessages => [...prevMessages, encryptErrorMessage]);
+    } catch (error) {
+      let errorMessage = 'An unknown error occurred.';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      console.error('ChatPage: Message processing error', error);
+      addMessageToList(`Error: ${errorMessage}`, 'system-error');
     } finally {
       setIsSending(false);
     }
   };
 
-  return (
-    <div>
-      <h1>Chat Page</h1>
-      <p>Welcome! {userToken ? `(Logged in with token: ${userToken.substring(0,10)}...)` : ''}</p>
-      <button onClick={handleLogout}>Logout</button>
+  const getSenderStyle = (sender: Message['sender']) => {
+    switch (sender) {
+      case 'user':
+        return { textAlign: 'right' as const, background: '#dcf8c6', color: 'black' };
+      case 'other':
+        return { textAlign: 'left' as const, background: '#f0f0f0', color: 'black' };
+      case 'system-info':
+        return { textAlign: 'center' as const, background: '#e0e0e0', color: '#555', fontStyle: 'italic' as const };
+      case 'system-error':
+        return { textAlign: 'center' as const, background: '#fdd', color: 'red', fontStyle: 'italic' as const };
+      default:
+        return { textAlign: 'left' as const, background: '#fff', color: 'black' };
+    }
+  };
 
-      <div className="chat-area" style={{ height: '300px', border: '1px solid #ccc', overflowY: 'auto', padding: '10px', marginBottom: '10px' }}>
-        {messages.map((msg) => (
-          <div key={msg.id} style={{
-            textAlign: msg.sender === 'user' ? 'right' : (msg.sender === 'system' ? 'center' : 'left'),
-            marginBottom: '5px',
-            color: msg.sender === 'system' ? 'grey' : 'black'
-          }}>
-            <span style={{
-              background: msg.sender === 'user' ? '#dcf8c6' : (msg.sender === 'system' ? '#e0e0e0' : '#f0f0f0'),
-              padding: '5px 10px',
-              borderRadius: '7px',
-              fontStyle: msg.sender === 'system' ? 'italic' : 'normal'
-            }}>
-              {msg.text}
-              <br />
-              <small style={{ fontSize: '0.7em' }}>
-                {msg.timestamp.toLocaleTimeString()}
-              </small>
-            </span>
-          </div>
-        ))}
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '10px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <h1>Chat Page</h1>
+        <button onClick={handleLogout}>Logout</button>
+      </div>
+      <p style={{ margin: '0 0 10px 0' }}>
+        Welcome! {userToken ? `(Token: ${userToken.substring(0,10)}...)` : ''}
+      </p>
+
+      <div
+        ref={chatAreaRef}
+        className="chat-area"
+        style={{ flexGrow: 1, border: '1px solid #ccc', overflowY: 'auto', padding: '10px', marginBottom: '10px' }}
+      >
+        {messages.map((msg) => {
+          const styles = getSenderStyle(msg.sender);
+          return (
+            <div key={msg.id} style={{ marginBottom: '8px', display: 'flex', justifyContent: styles.textAlign === 'right' ? 'flex-end' : (styles.textAlign === 'center' ? 'center' : 'flex-start') }}>
+              <div style={{ maxWidth: '70%' }}> {/* Message bubble max width */}
+                <span style={{
+                  background: styles.background,
+                  color: styles.color,
+                  fontStyle: styles.fontStyle,
+                  padding: '8px 12px',
+                  borderRadius: '10px',
+                  display: 'inline-block'
+                }}>
+                  {msg.text}
+                  <div style={{ fontSize: '0.7em', color: styles.color === 'red' ? 'darkred' : '#777', marginTop: '3px', textAlign: 'right' }}>
+                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <form onSubmit={handleSendMessage} className="message-input-form">
+      <form onSubmit={handleSendMessage} style={{ display: 'flex' }}>
         <input
           type="text"
           value={currentMessage}
           onChange={handleInputChange}
           placeholder="Type your message..."
-          style={{ width: 'calc(100% - 70px)', padding: '10px' }}
+          style={{ flexGrow: 1, padding: '10px', marginRight: '10px', borderRadius: '5px', border: '1px solid #ccc' }}
+          disabled={isSending}
         />
-        <button type="submit" style={{ width: '60px', padding: '10px' }} disabled={isSending}>
+        <button
+          type="submit"
+          style={{ padding: '10px 15px', borderRadius: '5px', border: 'none', background: '#007bff', color: 'white' }}
+          disabled={isSending}
+        >
           {isSending ? 'Sending...' : 'Send'}
         </button>
       </form>
