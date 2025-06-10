@@ -2,13 +2,15 @@
 import React, { useState, ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { encryptMessageAPI, decryptMessageAPI } from '../services/MessageService'; // Import message services
 
 // Define a type for individual messages
 interface Message {
   id: string; // Unique ID for each message
   text: string;
-  sender: 'user' | 'other'; // To differentiate user's messages from others (or self for now)
+  sender: 'user' | 'other' | 'system'; // Added 'system' for status/error messages
   timestamp: Date;
+  isEncrypted?: boolean; // Optional: to mark if the displayed text is encrypted
 }
 
 const ChatPage: React.FC = () => {
@@ -16,6 +18,7 @@ const ChatPage: React.FC = () => {
   const navigate = useNavigate();
   const [currentMessage, setCurrentMessage] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isSending, setIsSending] = useState<boolean>(false); // For send button loading state
 
   const handleLogout = () => {
     logout();
@@ -27,22 +30,68 @@ const ChatPage: React.FC = () => {
     setCurrentMessage(event.target.value);
   };
 
-  const handleSendMessage = (event: FormEvent<HTMLFormElement>) => {
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (currentMessage.trim() === '') return; // Don't send empty messages
+    if (currentMessage.trim() === '' || isSending) return;
 
-    const newMessage: Message = {
-      id: Date.now().toString(), // Simple unique ID for now
-      text: currentMessage,
-      sender: 'user', // Mark as sent by the current user
+    setIsSending(true);
+    const plainTextMessage = currentMessage;
+    setCurrentMessage(''); // Clear input immediately
+
+    // 1. Display user's original message
+    const sentMessage: Message = {
+      id: Date.now().toString() + '-sent',
+      text: `You sent: ${plainTextMessage}`,
+      sender: 'user',
       timestamp: new Date(),
     };
+    setMessages(prevMessages => [...prevMessages, sentMessage]);
 
-    setMessages(prevMessages => [...prevMessages, newMessage]);
-    setCurrentMessage(''); // Clear the input field
-    console.log('ChatPage: Message sent:', newMessage);
+    try {
+      // 2. Encrypt the message via backend
+      const encryptedText = await encryptMessageAPI(plainTextMessage);
+      const encryptedInfoMessage: Message = {
+        id: Date.now().toString() + '-encrypted',
+        text: `Encrypted: ${encryptedText.substring(0, 30)}... (Full: ${encryptedText})`,
+        sender: 'system',
+        timestamp: new Date(),
+        isEncrypted: true,
+      };
+      setMessages(prevMessages => [...prevMessages, encryptedInfoMessage]);
 
-    // TODO: Later, call backend to encrypt and send, then simulate receiving
+      // 3. Decrypt the message via backend (simulating receiving and decrypting)
+      try {
+        const decryptedText = await decryptMessageAPI(encryptedText);
+        const receivedMessage: Message = {
+          id: Date.now().toString() + '-decrypted',
+          text: `Simulated received (decrypted): ${decryptedText}`,
+          sender: 'other',
+          timestamp: new Date(),
+        };
+        setMessages(prevMessages => [...prevMessages, receivedMessage]);
+      } catch (decryptionError) {
+        console.error('ChatPage: Decryption failed', decryptionError);
+        const decryptErrorMessage: Message = {
+          id: Date.now().toString() + '-dec-error',
+          text: `Decryption Error: ${decryptionError instanceof Error ? decryptionError.message : 'Unknown error'}`,
+          sender: 'system',
+          timestamp: new Date(),
+        };
+        setMessages(prevMessages => [...prevMessages, decryptErrorMessage]);
+      }
+
+    } catch (encryptionError) {
+      console.error('ChatPage: Encryption failed', encryptionError);
+      const encryptErrorMessage: Message = {
+        id: Date.now().toString() + '-enc-error',
+        text: `Encryption Error: ${encryptionError instanceof Error ? encryptionError.message : 'Unknown error'}`,
+        sender: 'system',
+        timestamp: new Date(),
+      };
+      setMessages(prevMessages => [...prevMessages, encryptErrorMessage]);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -53,8 +102,17 @@ const ChatPage: React.FC = () => {
 
       <div className="chat-area" style={{ height: '300px', border: '1px solid #ccc', overflowY: 'auto', padding: '10px', marginBottom: '10px' }}>
         {messages.map((msg) => (
-          <div key={msg.id} style={{ textAlign: msg.sender === 'user' ? 'right' : 'left', marginBottom: '5px' }}>
-            <span style={{ background: msg.sender === 'user' ? '#dcf8c6' : '#f0f0f0', padding: '5px 10px', borderRadius: '7px' }}>
+          <div key={msg.id} style={{
+            textAlign: msg.sender === 'user' ? 'right' : (msg.sender === 'system' ? 'center' : 'left'),
+            marginBottom: '5px',
+            color: msg.sender === 'system' ? 'grey' : 'black'
+          }}>
+            <span style={{
+              background: msg.sender === 'user' ? '#dcf8c6' : (msg.sender === 'system' ? '#e0e0e0' : '#f0f0f0'),
+              padding: '5px 10px',
+              borderRadius: '7px',
+              fontStyle: msg.sender === 'system' ? 'italic' : 'normal'
+            }}>
               {msg.text}
               <br />
               <small style={{ fontSize: '0.7em' }}>
@@ -73,7 +131,9 @@ const ChatPage: React.FC = () => {
           placeholder="Type your message..."
           style={{ width: 'calc(100% - 70px)', padding: '10px' }}
         />
-        <button type="submit" style={{ width: '60px', padding: '10px' }}>Send</button>
+        <button type="submit" style={{ width: '60px', padding: '10px' }} disabled={isSending}>
+          {isSending ? 'Sending...' : 'Send'}
+        </button>
       </form>
     </div>
   );
