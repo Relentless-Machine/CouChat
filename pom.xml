@@ -41,12 +41,11 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
-        <!-- WireGuard/NAT Traversal library (示例, 请替换为���际库) -->
+        <!-- WireGuard/NAT Traversal library (示例, 请替换为�����际库) -->
         <wireguard.version>1.0.0</wireguard.version>
         <sqlite.version>3.41.2.2</sqlite.version> <!-- Updated SQLite version -->
         <junit.jupiter.version>5.8.2</junit.jupiter.version>
         <mockito.core.version>4.5.1</mockito.core.version>
-        <slf4j.version>1.7.32</slf4j.version> <!-- Added SLF4J version -->
         <ice4j.version>3.2-8-gfa5f931</ice4j.version> <!-- Added ice4j version -->
     </properties>
 
@@ -74,12 +73,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-client</artifactId>
-        </dependency>
-
-        <!-- SLF4J API - 使用Spring Boot管理的版本 -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
         </dependency>
 
         <!-- JUL to SLF4J Bridge -->
