@@ -2,6 +2,7 @@ package com.couchat.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service; // Import @Service
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -23,6 +24,7 @@ import java.util.Base64;
  * This class handles AES encryption for message content and interacts with the
  * database to save, fetch, and delete messages.
  */
+@Service // Add @Service annotation to make it a Spring bean
 public class MessageSecurityManager implements MessageEncryptionInterface, MessageStorageInterface {
 
     private static final Logger logger = LoggerFactory.getLogger(MessageSecurityManager.class);
