@@ -1,10 +1,12 @@
 // LoginForm.tsx
 import React, { useState, ChangeEvent, FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom'; // Import useNavigate
-import { login as loginService } from '../services/AuthService'; // Import the login service
+import { useNavigate } from 'react-router-dom';
+import { login as loginService } from '../services/AuthService';
+import { useAuth } from '../contexts/AuthContext'; // Import useAuth
 
 const LoginForm: React.FC = () => {
-  const navigate = useNavigate(); // Initialize useNavigate
+  const navigate = useNavigate();
+  const { login: contextLogin } = useAuth(); // Get login function from AuthContext
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false); // For loading state
@@ -26,15 +28,15 @@ const LoginForm: React.FC = () => {
 
     try {
       const response = await loginService(username, password);
-      if (response.success) {
-        console.log('LoginForm: Login successful!', response);
-        // setLoginMessage(`Login successful! Token: ${response.token || 'N/A'}`); // Optional: keep or remove
+      if (response.success && response.token) { // Check for token as well
+        console.log('LoginForm: Login successful via service!', response);
+        contextLogin(response.token); // Call context login with the token
         // Clear fields on successful login
         setUsername('');
         setPassword('');
         navigate('/chat'); // Navigate to chat page on success
       } else {
-        console.warn('LoginForm: Login failed.', response);
+        console.warn('LoginForm: Login failed via service.', response);
         setLoginMessage(`Login failed: ${response.message}`);
       }
     } catch (error) {
