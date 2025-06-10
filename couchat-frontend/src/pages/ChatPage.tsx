@@ -98,19 +98,34 @@ const ChatPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '10px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-        <h1>Chat Page</h1>
-        <button onClick={handleLogout}>Logout</button>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '10px', boxSizing: 'border-box' }}>
+      {/* Header Section */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '15px', // Increased margin
+        paddingBottom: '10px', // Added padding
+        borderBottom: '1px solid #eee' // Added border for separation
+      }}>
+        <h1 style={{ margin: 0, fontSize: '1.5em' }}>Chat Page</h1> {/* Removed default h1 margin and adjusted size */}
+        <button
+          onClick={handleLogout}
+          style={{ padding: '8px 15px', borderRadius: '5px', border: 'none', background: '#dc3545', color: 'white', cursor: 'pointer' }} // Styled logout button
+        >
+          Logout
+        </button>
       </div>
+
       <p style={{ margin: '0 0 10px 0' }}>
         Welcome! {userToken ? `(Token: ${userToken.substring(0,10)}...)` : ''}
       </p>
 
+      {/* Chat Area */}
       <div
         ref={chatAreaRef}
         className="chat-area"
-        style={{ flexGrow: 1, border: '1px solid #ccc', overflowY: 'auto', padding: '10px', marginBottom: '10px' }}
+        style={{ flexGrow: 1, border: '1px solid #ccc', overflowY: 'auto', padding: '10px', marginBottom: '10px', backgroundColor: '#f9f9f9' }} // Added background color
       >
         {messages.map((msg) => {
           const styles = getSenderStyle(msg.sender);
@@ -123,7 +138,8 @@ const ChatPage: React.FC = () => {
                   fontStyle: styles.fontStyle,
                   padding: '8px 12px',
                   borderRadius: '10px',
-                  display: 'inline-block'
+                  display: 'inline-block',
+                  wordBreak: 'break-word' // Added for long messages
                 }}>
                   {msg.text}
                   <div style={{ fontSize: '0.7em', color: styles.color === 'red' ? 'darkred' : '#777', marginTop: '3px', textAlign: 'right' }}>
@@ -136,7 +152,8 @@ const ChatPage: React.FC = () => {
         })}
       </div>
 
-      <form onSubmit={handleSendMessage} style={{ display: 'flex' }}>
+      {/* Message Input Form */}
+      <form onSubmit={handleSendMessage} style={{ display: 'flex', marginTop: 'auto' }}> {/* marginTop: auto to push to bottom if needed */}
         <input
           type="text"
           value={currentMessage}
@@ -147,7 +164,7 @@ const ChatPage: React.FC = () => {
         />
         <button
           type="submit"
-          style={{ padding: '10px 15px', borderRadius: '5px', border: 'none', background: '#007bff', color: 'white' }}
+          style={{ padding: '10px 15px', borderRadius: '5px', border: 'none', background: '#007bff', color: 'white', cursor: 'pointer' }}
           disabled={isSending}
         >
           {isSending ? 'Sending...' : 'Send'}

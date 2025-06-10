@@ -8,7 +8,7 @@
     "dev": "concurrently -k \"npm:vite-dev\" \"npm:electron-dev\"",
     "vite-dev": "vite",
     "electron-dev": "wait-on tcp:5173 && cross-env NODE_ENV=development electron .",
-    "build": "vite build && tsc -p tsconfig.electron.json && electron-builder",
+    "build": "vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
