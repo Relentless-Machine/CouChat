@@ -1,8 +1,10 @@
 // LoginForm.tsx
 import React, { useState, ChangeEvent, FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom'; // Import useNavigate
 import { login as loginService } from '../services/AuthService'; // Import the login service
 
 const LoginForm: React.FC = () => {
+  const navigate = useNavigate(); // Initialize useNavigate
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false); // For loading state
@@ -26,10 +28,11 @@ const LoginForm: React.FC = () => {
       const response = await loginService(username, password);
       if (response.success) {
         console.log('LoginForm: Login successful!', response);
-        setLoginMessage(`Login successful! Token: ${response.token || 'N/A'}`);
+        // setLoginMessage(`Login successful! Token: ${response.token || 'N/A'}`); // Optional: keep or remove
         // Clear fields on successful login
         setUsername('');
         setPassword('');
+        navigate('/chat'); // Navigate to chat page on success
       } else {
         console.warn('LoginForm: Login failed.', response);
         setLoginMessage(`Login failed: ${response.message}`);
