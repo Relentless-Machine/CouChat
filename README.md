@@ -26,6 +26,14 @@ CouChat is an encrypted peer-to-peer (P2P) communication software designed with 
 - **CI/CD**: Jenkins (planned)
 - **Frontend**: Vue.js (initially, with React as a potential better choice) - To be developed separately.
 
+## Current Development Status
+
+As of June 10, 2025:
+
+*   A **v0.1.0 prototype** of the Electron-based frontend application has been developed. This prototype demonstrates core UI flows, authentication placeholders, and basic chat interface functionality.
+*   This prototype version is available on the `release/v0.1.0-prototype` branch for review, demonstration, or specific testing purposes.
+*   All ongoing development and feature enhancements based on this prototype should be branched off the `dev` branch. The `dev` branch incorporates all learnings and code from the v0.1.0 prototype.
+
 ## Modules (High-Level)
 
 1.  **P2P Connection Management**: Handles NAT traversal (STUN/TURN) and establishes P2P connections.
@@ -84,4 +92,3 @@ couchat/
 ## Contribution
 
 (To be updated with contribution guidelines)
-
