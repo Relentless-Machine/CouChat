@@ -18,29 +18,36 @@ CouChat is an encrypted peer-to-peer (P2P) communication software designed with 
 ## Tech Stack
 
 - **Backend**: Java, Spring Boot
+- **Frontend**: React, Electron
 - **Database**: SQLite (for local encrypted storage)
 - **Build Tool**: Maven
 - **Version Control**: Git
 - **Code Repository**: GitHub
 - **Testing**: JUnit 5, Mockito
 - **CI/CD**: Jenkins (planned)
-- **Frontend**: Vue.js (initially, with React as a potential better choice) - To be developed separately.
 
 ## Current Development Status
 
-As of June 10, 2025:
+As of June 14, 2025:
 
-*   A **v0.1.0 prototype** of the Electron-based frontend application has been developed. This prototype demonstrates core UI flows, authentication placeholders, and basic chat interface functionality.
-*   This prototype version is available on the `release/v0.1.0-prototype` branch for review, demonstration, or specific testing purposes.
-*   All ongoing development and feature enhancements based on this prototype should be branched off the `dev` branch. The `dev` branch incorporates all learnings and code from the v0.1.0 prototype.
+*   The project is actively developing a **second prototype** focusing on core P2P functionality within a Local Area Network (LAN).
+*   Key goals for this prototype include:
+    *   LAN-based device discovery.
+    *   End-to-end encrypted text and file messaging between two peers.
+    *   Device Passkey based authentication (as a stand-in for full OAuth initially).
+    *   Integration of the Java backend and React/Electron frontend into a single distributable package.
+*   The `dev` branch is the main line for this ongoing development, incorporating learnings from previous prototypes.
+*   A v0.1.0 frontend prototype (demonstrating UI flows) is available on the `release/v0.1.0-prototype` branch for historical reference.
 
-## Modules (High-Level)
+## Modules (Backend - Key Services)
 
-1.  **P2P Connection Management**: Handles NAT traversal (STUN/TURN) and establishes P2P connections.
-2.  **Message Encryption & Storage**: Manages AES encryption for messages and RSA for key exchange. Stores messages securely in a local SQLite database.
-3.  **Identity Authentication**: Implements OAuth2.0 for user authentication and device passkey binding.
-4.  **Group Management**: Manages group creation, member administration, and message synchronization within groups.
-5.  **Auxiliary Server Module (Signaling/Relay)**: Assists in P2P connection establishment and message relay when direct connection fails.
+1.  **`com.couchat.auth.PasskeyAuthService`**: Manages device Passkey generation, registration, and user login/authentication.
+2.  **`com.couchat.security.EncryptionService`**: Handles cryptographic operations, including RSA key pair management for identity and key exchange, AES session key generation, and end-to-end encryption/decryption of messages and files.
+3.  **`com.couchat.p2p.DeviceDiscoveryService`**: Responsible for discovering other CouChat clients on the local network using multicast/broadcast.
+4.  **`com.couchat.p2p.P2PConnectionManager`**: Manages the lifecycle of P2P connections with peers, including the secure handshake process (key exchange) and session establishment.
+5.  **`com.couchat.messaging.MessageService`**: Handles the creation, processing (serialization/deserialization), and routing of different message types (text, file info, etc.).
+6.  **`com.couchat.transfer.FileTransferService`**: Manages the mechanics of file transfers, including initiating transfers, chunking files, sending/receiving chunks, and tracking transfer status.
+7.  **Repository Layer (`com.couchat.repository.*`)**: Provides data persistence for users, messages, conversations, etc., primarily using a local SQLite database.
 
 ## Getting Started
 
@@ -50,31 +57,40 @@ As of June 10, 2025:
 
 ```
 couchat/
-├── pom.xml                # Maven project configuration
+├── pom.xml                # Maven project configuration for backend
 ├── README.md              # This file
-└── src/
+├── couchat_storage.db     # Local SQLite database file (gitignored typically)
+├── couchat-frontend/      # React/Electron frontend application
+│   ├── package.json
+│   ├── electron-main.cjs
+│   ├── vite.config.ts
+│   └── src/
+│       ├── main.tsx
+│       └── App.tsx
+└── src/                   # Java backend source
     ├── main/
     │   ├── java/
     │   │   └── com/
     │   │       └── couchat/
-    │   │           ├── CouChatApplication.java  # Spring Boot main application class
-    │   │           ├── auth/                  # Authentication related classes
-    │   │           │   └── AuthenticationInterface.java
-    │   │           ├── group/                 # Group chat related classes
-    │   │           │   └── GroupManagementInterface.java
-    │   │           ├── p2p/                   # P2P connection management
-    │   │           │   └── P2PConnectionInterface.java
-    │   │           └── security/              # Encryption and local storage
-    │   │               ├── MessageEncryptionInterface.java
-    │   │               └── MessageStorageInterface.java
+    │   │           ├── CouChatApplication.java
+    │   │           ├── auth/              # Authentication (PasskeyAuthService)
+    │   │           ├── conversation/      # Conversation management (future)
+    │   │           ├── device/            # Device related services (future)
+    │   │           ├── group/             # Group chat (future)
+    │   │           ├── messaging/         # Message models, services, controllers
+    │   │           ├── p2p/               # P2P discovery and connection management
+    │   │           ├── repository/        # Data persistence interfaces and implementations
+    │   │           ├── security/          # Encryption services
+    │   │           ├── transfer/          # File transfer services and controllers
+    │   │           └── user/              # User management (future)
+    │   │           └── web/               # Web DTOs and some controllers
     │   └── resources/
-    │       ├── application.properties # Spring Boot configuration
-    │       └── db_schema.sql        # SQLite database schema
+    │       ├── application.properties
+    │       └── db_schema.sql
     └── test/
         └── java/
             └── com/
-                └── couchat/
-                    └── ... (unit tests)
+                └── couchat/ # Unit and integration tests
 ```
 
 ## Design Documents
@@ -84,10 +100,18 @@ couchat/
 
 ## Next Steps
 
-- Implement core functionalities for each module.
-- Develop unit and integration tests.
-- Set up CI/CD pipeline.
-- Begin frontend development.
+- **Backend**:
+    - Solidify LAN device discovery and P2P connection stability.
+    - Complete and rigorously test end-to-end encrypted text and file transfer.
+    - Ensure robust Passkey authentication and session management.
+    - Integrate database operations for storing messages and user Passkey information.
+- **Frontend**:
+    - Develop React components for user discovery, chat interface (text & file), and Passkey login.
+    - Integrate frontend with backend APIs via Electron's IPC or local HTTP requests.
+- **Integration & Packaging**:
+    - Package the Java backend and React/Electron frontend into a single distributable application.
+- **Testing**:
+    - Conduct thorough end-to-end testing of the integrated prototype on a LAN.
 
 ## Contribution
 
