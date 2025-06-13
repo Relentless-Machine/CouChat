@@ -63,8 +63,9 @@ class P2PConnectionTest {
 
         when(mockSocket.getInputStream()).thenReturn(mockInputStream);
         when(mockSocket.getOutputStream()).thenReturn(mockOutputStream);
-        when(mockSocket.isClosed()).thenReturn(false); // Assume socket is open initially
-        when(mockSocket.isConnected()).thenReturn(true); // Assume socket is connected initially
+        // Use lenient stubbing for general socket state mocks in setUp
+        lenient().when(mockSocket.isClosed()).thenReturn(false); // Assume socket is open initially
+        lenient().when(mockSocket.isConnected()).thenReturn(true); // Assume socket is connected initially
 
         p2pConnection = new P2PConnection(
                 LOCAL_PEER_ID,
