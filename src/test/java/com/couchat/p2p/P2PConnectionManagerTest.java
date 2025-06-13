@@ -1,5 +1,6 @@
 package com.couchat.p2p;
 
+import com.couchat.auth.PasskeyAuthService; // Import PasskeyAuthService
 import com.couchat.messaging.MessageService;
 import com.couchat.security.EncryptionService;
 import org.junit.jupiter.api.AfterEach;
@@ -35,7 +36,9 @@ public class P2PConnectionManagerTest {
     @Mock
     private EncryptionService mockEncryptionService;
     @Mock
-    private MessageService mockMessageService; // Added missing mock for MessageService
+    private MessageService mockMessageService;
+    @Mock // Add mock for PasskeyAuthService
+    private PasskeyAuthService mockPasskeyAuthService;
 
     private P2PConnectionManager p2pConnectionManager;
     // private static final String TEST_PEER_ADDRESS = "dummy.peer.address";
@@ -49,7 +52,8 @@ public class P2PConnectionManagerTest {
         p2pConnectionManager = new P2PConnectionManager(
                 mockDeviceDiscoveryService,
                 mockEncryptionService,
-                mockMessageService
+                mockMessageService,
+                mockPasskeyAuthService // Pass the mocked PasskeyAuthService
         );
         // p2pConnectionManager.init(); // Call init if it's not automatically called by @PostConstruct in test context
                                      // For Spring beans, @PostConstruct is handled. For plain unit tests, manual call might be needed.

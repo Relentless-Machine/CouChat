@@ -1,5 +1,6 @@
 package com.couchat.security;
 
+import com.couchat.auth.PasskeyAuthService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -8,7 +9,10 @@ import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.File;
+import java.io.IOException;
 import java.security.*;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -26,36 +30,92 @@ public class EncryptionService {
     private static final Logger logger = LoggerFactory.getLogger(EncryptionService.class);
     private static final String RSA_ALGORITHM = "RSA";
     private static final String AES_ALGORITHM = "AES";
-    private static final String AES_TRANSFORMATION = "AES/ECB/PKCS5Padding"; // Consider more secure modes like CBC or GCM
-    private static final String RSA_TRANSFORMATION = "RSA/ECB/PKCS1Padding"; // Standard RSA padding
+    // Changed AES_TRANSFORMATION to GCM mode
+    private static final String AES_TRANSFORMATION = "AES/GCM/NoPadding";
+    private static final String RSA_TRANSFORMATION = "RSA/ECB/PKCS1Padding";
 
-    private KeyPair localRsaKeyPair; // Stores the local user's RSA key pair
+    private static final int GCM_IV_LENGTH_BYTES = 12; // Standard IV length for GCM
+    private static final int GCM_TAG_LENGTH_BITS = 128; // Standard tag length for GCM
+
+    private static final String CONFIG_DIR_NAME = ".couchat";
+    private static final String RSA_PUBLIC_KEY_FILE = "rsa.pub";
+    private static final String RSA_PRIVATE_KEY_FILE = "rsa.key";
+
+    private final PasskeyAuthService passkeyAuthService; // For potential future use (e.g., encrypting stored keys)
+
+    private KeyPair localRsaKeyPair;
 
     /**
-     * Initializes the EncryptionService.
-     * Generates a new RSA key pair for the local user upon startup if one doesn't exist.
-     * In a real application, this key pair would typically be loaded from secure storage
-     * or generated once and stored.
+     * Constructs the EncryptionService.
+     *
+     * @param passkeyAuthService Service to get authentication details, potentially for key protection.
      */
-    public EncryptionService() {
-        // For demonstration, always generate a new RSA key pair on startup.
-        // In a real app, load existing keys or generate and store them securely.
-        this.localRsaKeyPair = generateRsaKeyPair();
+    public EncryptionService(PasskeyAuthService passkeyAuthService) {
+        this.passkeyAuthService = passkeyAuthService;
+        loadOrGenerateRsaKeyPair();
+    }
+
+    private void loadOrGenerateRsaKeyPair() {
+        File configDir = new File(System.getProperty("user.home"), CONFIG_DIR_NAME);
+        File publicKeyFile = new File(configDir, RSA_PUBLIC_KEY_FILE);
+        File privateKeyFile = new File(configDir, RSA_PRIVATE_KEY_FILE);
+
+        if (publicKeyFile.exists() && privateKeyFile.exists()) {
+            try {
+                byte[] publicKeyBytes = java.nio.file.Files.readAllBytes(publicKeyFile.toPath());
+                byte[] privateKeyBytes = java.nio.file.Files.readAllBytes(privateKeyFile.toPath());
+
+                KeyFactory keyFactory = KeyFactory.getInstance(RSA_ALGORITHM);
+                X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(publicKeyBytes);
+                PublicKey publicKey = keyFactory.generatePublic(publicKeySpec);
+
+                PKCS8EncodedKeySpec privateKeySpec = new PKCS8EncodedKeySpec(privateKeyBytes);
+                PrivateKey privateKey = keyFactory.generatePrivate(privateKeySpec);
+
+                this.localRsaKeyPair = new KeyPair(publicKey, privateKey);
+                logger.info("RSA key pair loaded successfully from {} and {}.", publicKeyFile.getAbsolutePath(), privateKeyFile.getAbsolutePath());
+            } catch (IOException | NoSuchAlgorithmException | InvalidKeySpecException e) {
+                logger.error("Failed to load RSA key pair from files. Generating a new one.", e);
+                generateAndStoreRsaKeyPair(publicKeyFile, privateKeyFile, configDir);
+            }
+        } else {
+            logger.info("RSA key pair not found. Generating a new one.");
+            generateAndStoreRsaKeyPair(publicKeyFile, privateKeyFile, configDir);
+        }
+
+        if (this.localRsaKeyPair == null) {
+            logger.error("CRITICAL: RSA key pair is null after attempting load/generation. Encryption service will not function correctly.");
+        }
+    }
+
+    private void generateAndStoreRsaKeyPair(File publicKeyFile, File privateKeyFile, File configDir) {
+        this.localRsaKeyPair = generateRsaKeyPairInternal();
         if (this.localRsaKeyPair != null) {
             logger.info("New RSA key pair generated for local user.");
-            // logger.info("Public Key: {}", getPublicKeyString(this.localRsaKeyPair.getPublic()));
+            try {
+                if (!configDir.exists()) {
+                    if (configDir.mkdirs()) {
+                        logger.info("Created configuration directory: {}", configDir.getAbsolutePath());
+                    } else {
+                        logger.error("Failed to create configuration directory: {}. RSA keys will not be persisted.", configDir.getAbsolutePath());
+                        return; // Cannot store keys
+                    }
+                }
+                java.nio.file.Files.write(publicKeyFile.toPath(), this.localRsaKeyPair.getPublic().getEncoded());
+                java.nio.file.Files.write(privateKeyFile.toPath(), this.localRsaKeyPair.getPrivate().getEncoded());
+                logger.info("RSA key pair stored successfully to {} and {}.", publicKeyFile.getAbsolutePath(), privateKeyFile.getAbsolutePath());
+            } catch (IOException e) {
+                logger.error("Failed to store RSA key pair. Keys will be in-memory for this session.", e);
+            }
         } else {
-            logger.error("Failed to generate RSA key pair on service initialization.");
-            // This is a critical failure, application might not function securely.
+            logger.error("Failed to generate RSA key pair during store operation.");
         }
     }
 
     /**
-     * Generates a new RSA key pair.
-     *
-     * @return A {@link KeyPair} containing the public and private RSA keys, or null on failure.
+     * Internal RSA key pair generation logic.
      */
-    public KeyPair generateRsaKeyPair() {
+    private KeyPair generateRsaKeyPairInternal() {
         try {
             KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(RSA_ALGORITHM);
             keyPairGenerator.initialize(2048); // 2048-bit key size for good security
@@ -156,23 +216,37 @@ public class EncryptionService {
         }
         try {
             Cipher cipher = Cipher.getInstance(AES_TRANSFORMATION);
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+            byte[] iv = new byte[GCM_IV_LENGTH_BYTES];
+            SecureRandom random = SecureRandom.getInstanceStrong(); // Use a strong RNG for IV
+            random.nextBytes(iv);
+
+            GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey, gcmParameterSpec);
+
             byte[] encryptedBytes = cipher.doFinal(data);
-            return Base64.getEncoder().encodeToString(encryptedBytes);
+
+            // Concatenate IV and ciphertext: IV + Ciphertext
+            byte[] ivAndEncryptedBytes = new byte[iv.length + encryptedBytes.length];
+            System.arraycopy(iv, 0, ivAndEncryptedBytes, 0, iv.length);
+            System.arraycopy(encryptedBytes, 0, ivAndEncryptedBytes, iv.length, encryptedBytes.length);
+
+            return Base64.getEncoder().encodeToString(ivAndEncryptedBytes);
+
         } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
-            logger.error("AES encryption algorithm or padding not found.", e);
-        } catch (InvalidKeyException e) {
-            logger.error("Invalid AES key for encryption.", e);
-        } catch (Exception e) {
-            logger.error("Error during AES encryption.", e);
+            logger.error("AES encryption algorithm/padding GCM not found or SecureRandom issue.", e);
+        } catch (InvalidKeyException | InvalidAlgorithmParameterException e) {
+            logger.error("Invalid AES key or GCM parameters for encryption.", e);
+        } catch (Exception e) { // General exception for doFinal (e.g., IllegalBlockSizeException)
+            logger.error("Error during AES encryption with GCM.", e);
         }
         return null;
     }
 
     /**
-     * Decrypts data using an AES symmetric key.
+     * Decrypts data using an AES symmetric key with GCM mode.
+     * Expects the input to be Base64 encoded (IV + Ciphertext).
      *
-     * @param encryptedDataB64 The Base64 encoded encrypted data.
+     * @param encryptedDataB64 The Base64 encoded (IV + Ciphertext).
      * @param secretKey The AES {@link SecretKey} to use for decryption.
      * @return The decrypted data as a byte array, or null on failure.
      */
@@ -182,16 +256,33 @@ public class EncryptionService {
             return null;
         }
         try {
+            byte[] ivAndEncryptedBytes = Base64.getDecoder().decode(encryptedDataB64);
+
+            if (ivAndEncryptedBytes.length < GCM_IV_LENGTH_BYTES) {
+                logger.error("Encrypted data is too short to contain IV for GCM decryption.");
+                return null;
+            }
+
+            // Extract IV from the beginning of the byte array
+            byte[] iv = new byte[GCM_IV_LENGTH_BYTES];
+            System.arraycopy(ivAndEncryptedBytes, 0, iv, 0, iv.length);
+
+            // Extract actual ciphertext
+            byte[] encryptedBytes = new byte[ivAndEncryptedBytes.length - GCM_IV_LENGTH_BYTES];
+            System.arraycopy(ivAndEncryptedBytes, GCM_IV_LENGTH_BYTES, encryptedBytes, 0, encryptedBytes.length);
+
             Cipher cipher = Cipher.getInstance(AES_TRANSFORMATION);
-            cipher.init(Cipher.DECRYPT_MODE, secretKey);
-            byte[] encryptedBytes = Base64.getDecoder().decode(encryptedDataB64);
+            GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, gcmParameterSpec);
+
             return cipher.doFinal(encryptedBytes);
+
         } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
-            logger.error("AES decryption algorithm or padding not found.", e);
-        } catch (InvalidKeyException e) {
-            logger.error("Invalid AES key for decryption.", e);
-        } catch (Exception e) {
-            logger.error("Error during AES decryption.", e);
+            logger.error("AES decryption algorithm/padding GCM not found.", e);
+        } catch (InvalidKeyException | InvalidAlgorithmParameterException e) {
+            logger.error("Invalid AES key or GCM parameters for decryption.", e);
+        } catch (Exception e) { // General exception for doFinal (e.g., BadPaddingException, AEADBadTagException)
+            logger.error("Error during AES decryption with GCM (e.g., tag mismatch).", e);
         }
         return null;
     }
@@ -272,4 +363,3 @@ public class EncryptionService {
         }
     }
 }
-

@@ -94,10 +94,22 @@ class P2PConnectionTest {
     @Test
     void testSendMessage_HandshakeNotComplete() {
         logger.info("Testing sendMessage when handshake is not complete...");
-        String testMessage = "Hello World";
+        // Message testMessage = new Message(); // Create a dummy Message object
+        // testMessage.setContent("Hello World");
+        // For P2PConnection, a full Message object might not be needed if it exits early.
+        // However, to align with Message class constructor, we should provide necessary fields if we were to create one.
+        // For this test, the call to sendMessage should ideally not even reach message preparation.
+        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
+
+        // Simulate messageService.prepareOutgoingMessage if it's called even when handshake is not complete
+        // For this test, we assume P2PConnection checks handshake status *before* calling prepareOutgoingMessage.
+        // If prepareOutgoingMessage was called, we'd mock it:
+        // when(mockMessageService.prepareOutgoingMessage(any(Message.class))).thenReturn("{\\"content\\":\\"Hello World\\"}");
+
         p2pConnection.sendMessage(testMessage);
 
         // Verify no encryption or send attempt was made
+        verify(mockMessageService, never()).prepareOutgoingMessage(any(Message.class));
         verify(mockEncryptionService, never()).encryptWithAesKey(any(), any());
         assertEquals(0, ((ByteArrayOutputStream) mockOutputStream).size(), "OutputStream should be empty if handshake is not complete.");
         logger.info("sendMessage_HandshakeNotComplete test passed.");
@@ -108,9 +120,16 @@ class P2PConnectionTest {
         logger.info("Testing sendMessage when session key is not available (but handshake marked complete)...");
         p2pConnection.setHandshakeComplete(); // Mark handshake as complete
         // Session key is still null
-        String testMessage = "Hello World";
+        // Message testMessage = new Message(); // Create a dummy Message object
+        // testMessage.setContent("Hello World");
+        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
+
+        // As above, assume P2PConnection checks session key status *before* calling prepareOutgoingMessage.
+        // when(mockMessageService.prepareOutgoingMessage(any(Message.class))).thenReturn("{\\"content\\":\\"Hello World\\"}");
+
         p2pConnection.sendMessage(testMessage);
 
+        verify(mockMessageService, never()).prepareOutgoingMessage(any(Message.class));
         verify(mockEncryptionService, never()).encryptWithAesKey(any(), any());
         assertEquals(0, ((ByteArrayOutputStream) mockOutputStream).size(), "OutputStream should be empty if session key is null.");
         logger.info("sendMessage_SessionKeyNotAvailable test passed.");
@@ -122,19 +141,57 @@ class P2PConnectionTest {
         p2pConnection.setSessionAesKey(testSessionKey);
         p2pConnection.setHandshakeComplete();
 
-        String plainMessage = "This is a test message.";
-        byte[] plainMessageBytes = plainMessage.getBytes(StandardCharsets.UTF_8);
+        String messageContent = "This is a test message.";
+        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, messageContent);
+        // testMessage.setId("msg1"); // ID is auto-generated
+        // testMessage.setTimestamp(System.currentTimeMillis()); // Timestamp is auto-generated
+
+        // Simplified and direct JSON string for the test
+        // ObjectMapper in MessageService will handle actual serialization.
+        // For mocking prepareOutgoingMessage, we need a plausible JSON string.
+        // Let's assume MessageService.prepareOutgoingMessage correctly serializes it.
+        // The exact content of serializedMessageJson will depend on ObjectMapper configuration in MessageService.
+        // For the purpose of this test, we can use a simplified representation if MessageService is mocked.
+        // However, it's better to make it somewhat realistic if possible, or ensure the mock is robust.
+        // String serializedMessageJson = "{\"id\":\"" + testMessage.getMessageId() + "\",\"type\":\"TEXT\",\"senderId\":\"" + LOCAL_PEER_ID + "\",\"recipientId\":\"" + REMOTE_PEER_ID + "\",\"timestamp\":\"" + testMessage.getTimestamp().toString() + "\",\"payload\":\"This is a test message.\"}";
+        // To avoid issues with timestamp exact match, let's use a more generic payload string for mocking, as MessageService handles the actual serialization.
+        String serializedMessageJson = "{\"payload\":\"This is a test message.\"}"; // Simplified for mocking
+
+        byte[] serializedMessageBytes = serializedMessageJson.getBytes(StandardCharsets.UTF_8);
         String encryptedMessageB64 = Base64.getEncoder().encodeToString("encrypted_content".getBytes(StandardCharsets.UTF_8));
 
-        when(mockEncryptionService.encryptWithAesKey(eq(plainMessageBytes), eq(testSessionKey))).thenReturn(encryptedMessageB64);
+        when(mockMessageService.prepareOutgoingMessage(eq(testMessage))).thenReturn(serializedMessageJson);
+        when(mockEncryptionService.encryptWithAesKey(eq(serializedMessageBytes), eq(testSessionKey))).thenReturn(encryptedMessageB64);
 
-        p2pConnection.sendMessage(plainMessage);
+        p2pConnection.sendMessage(testMessage);
 
-        verify(mockEncryptionService, times(1)).encryptWithAesKey(plainMessageBytes, testSessionKey);
+        verify(mockMessageService, times(1)).prepareOutgoingMessage(testMessage);
+        verify(mockEncryptionService, times(1)).encryptWithAesKey(serializedMessageBytes, testSessionKey);
         assertEquals(encryptedMessageB64, ((ByteArrayOutputStream) mockOutputStream).toString(StandardCharsets.UTF_8),
                 "OutputStream should contain the Base64 encoded encrypted message.");
         logger.info("sendMessage_Successful test passed.");
     }
+
+    @Test
+    void testSendMessage_SerializationFails() throws IOException {
+        logger.info("Testing sendMessage when message serialization fails...");
+        p2pConnection.setSessionAesKey(testSessionKey);
+        p2pConnection.setHandshakeComplete();
+
+        // Message testMessage = new Message();
+        // testMessage.setContent("Another test message.");
+        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
+
+        when(mockMessageService.prepareOutgoingMessage(eq(testMessage))).thenReturn(null); // Simulate serialization failure
+
+        p2pConnection.sendMessage(testMessage);
+
+        verify(mockMessageService, times(1)).prepareOutgoingMessage(testMessage);
+        verify(mockEncryptionService, never()).encryptWithAesKey(any(), any()); // Encryption should not be attempted
+        assertEquals(0, ((ByteArrayOutputStream) mockOutputStream).size(), "OutputStream should be empty if serialization fails.");
+        logger.info("sendMessage_SerializationFails test passed.");
+    }
+
 
     @Test
     void testSendMessage_EncryptionFails() throws IOException {
@@ -142,14 +199,20 @@ class P2PConnectionTest {
         p2pConnection.setSessionAesKey(testSessionKey);
         p2pConnection.setHandshakeComplete();
 
-        String plainMessage = "Another test message.";
-        byte[] plainMessageBytes = plainMessage.getBytes(StandardCharsets.UTF_8);
+        // Message testMessage = new Message();
+        // testMessage.setContent("Another test message.");
+        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
+        // Simplified JSON string
+        String serializedMessageJson = "{\"payload\":\"Another test message.\"}"; // Simplified for mocking
+        byte[] serializedMessageBytes = serializedMessageJson.getBytes(StandardCharsets.UTF_8);
 
-        when(mockEncryptionService.encryptWithAesKey(eq(plainMessageBytes), eq(testSessionKey))).thenReturn(null); // Simulate encryption failure
+        when(mockMessageService.prepareOutgoingMessage(eq(testMessage))).thenReturn(serializedMessageJson);
+        when(mockEncryptionService.encryptWithAesKey(eq(serializedMessageBytes), eq(testSessionKey))).thenReturn(null); // Simulate encryption failure
 
-        p2pConnection.sendMessage(plainMessage);
+        p2pConnection.sendMessage(testMessage);
 
-        verify(mockEncryptionService, times(1)).encryptWithAesKey(plainMessageBytes, testSessionKey);
+        verify(mockMessageService, times(1)).prepareOutgoingMessage(testMessage);
+        verify(mockEncryptionService, times(1)).encryptWithAesKey(serializedMessageBytes, testSessionKey);
         assertEquals(0, ((ByteArrayOutputStream) mockOutputStream).size(), "OutputStream should be empty if encryption fails.");
         logger.info("sendMessage_EncryptionFails test passed.");
     }
@@ -157,8 +220,8 @@ class P2PConnectionTest {
     @Test
     void testRun_ReceivesAndDecryptsMessage_Successful() throws Exception {
         logger.info("Testing run method for successful message reception and decryption...");
-        String decryptedMessageContent = "Decrypted test data";
-        String encryptedMessageB64 = Base64.getEncoder().encodeToString("encrypted_test_data".getBytes(StandardCharsets.UTF_8));
+        String decryptedMessageJson = "{\"content\":\"Decrypted test data\"}"; // Assuming this is the expected JSON structure
+        String encryptedMessageB64 = Base64.getEncoder().encodeToString("encrypted_test_data_for_decryption".getBytes(StandardCharsets.UTF_8)); // Use a distinct string
 
         // Simulate incoming data
         mockInputStream = new ByteArrayInputStream(encryptedMessageB64.getBytes(StandardCharsets.UTF_8));
@@ -173,7 +236,7 @@ class P2PConnectionTest {
         p2pConnection.setHandshakeComplete();
 
         when(mockEncryptionService.decryptWithAesKey(eq(encryptedMessageB64), eq(testSessionKey)))
-                .thenReturn(decryptedMessageContent.getBytes(StandardCharsets.UTF_8));
+                .thenReturn(decryptedMessageJson.getBytes(StandardCharsets.UTF_8));
 
         Thread listenerThread = new Thread(p2pConnection);
         listenerThread.start();
@@ -185,7 +248,7 @@ class P2PConnectionTest {
         listenerThread.join(500); // Wait for thread to finish
 
         verify(mockEncryptionService, times(1)).decryptWithAesKey(encryptedMessageB64, testSessionKey);
-        verify(mockMessageService, times(1)).processIncomingMessage(REMOTE_PEER_ID, decryptedMessageContent);
+        verify(mockMessageService, times(1)).processIncomingMessage(REMOTE_PEER_ID, decryptedMessageJson);
         logger.info("run_ReceivesAndDecryptsMessage_Successful test passed.");
     }
 

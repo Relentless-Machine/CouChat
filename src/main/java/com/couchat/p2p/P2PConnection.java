@@ -1,6 +1,7 @@
 package com.couchat.p2p;
 
 import com.couchat.messaging.MessageService;
+import com.couchat.messaging.model.Message; // Import Message class
 import com.couchat.security.EncryptionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,7 +13,7 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64; // Import for Base64 encoding/decoding
+import java.util.Base64;
 
 /**
  * Represents and manages an active P2P connection with a remote peer.
@@ -37,8 +38,6 @@ public class P2PConnection implements Runnable {
     // Session-specific security parameters
     private SecretKey sessionAesKey;            // AES key for this session
     private boolean handshakeComplete = false;    // True if key exchange and handshake are done
-    // remoteRsaPublicKey might be used by manager during handshake, not necessarily stored here long-term
-    // unless needed for re-keying or other specific operations within P2PConnection itself.
 
     /**
      * Constructs a new P2PConnection.
@@ -108,16 +107,12 @@ public class P2PConnection implements Runnable {
     @Override
     public void run() {
         try {
-            byte[] buffer = new byte[4096]; // Buffer for incoming messages
+            byte[] buffer = new byte[8192]; // Increased buffer size for potentially larger JSON messages
             int bytesRead;
 
             while (running && !socket.isClosed() && (bytesRead = inputStream.read(buffer)) != -1) {
                 if (!handshakeComplete) {
-                    // This path should ideally not be hit if P2PConnectionManager handles all pre-handshake messages.
-                    // However, as a safeguard or if P2PConnection is started before full handshake signal:
                     logger.warn("Received data from peer {} before handshake completion. Ignoring.", peerId);
-                    // Or, pass to a specific pre-handshake handler if P2PConnection is involved in handshake steps.
-                    // For now, we assume P2PConnectionManager handles handshake messages on its own thread.
                     continue;
                 }
 
@@ -133,16 +128,15 @@ public class P2PConnection implements Runnable {
                 byte[] decryptedMessageBytes = encryptionService.decryptWithAesKey(rawEncryptedMessageB64, sessionAesKey);
 
                 if (decryptedMessageBytes != null) {
-                    String decryptedMessage = new String(decryptedMessageBytes, StandardCharsets.UTF_8);
-                    logger.info("Decrypted message from {}: {}", peerId, decryptedMessage.length() > 100 ? decryptedMessage.substring(0,100) + "..." : decryptedMessage);
-                    messageService.processIncomingMessage(peerId, decryptedMessage); // Process the decrypted message
+                    String decryptedJsonMessage = new String(decryptedMessageBytes, StandardCharsets.UTF_8);
+                    logger.info("Decrypted JSON message from {}: {}", peerId, decryptedJsonMessage.length() > 100 ? decryptedJsonMessage.substring(0,100) + "..." : decryptedJsonMessage);
+                    messageService.processIncomingMessage(peerId, decryptedJsonMessage); // Process the decrypted JSON message
                 } else {
                     logger.warn("Failed to decrypt message from peer {}. Potentially corrupted or invalid key.", peerId);
-                    // Consider policies for handling decryption failures (e.g., terminate connection after N failures)
                 }
             }
         } catch (SocketException se) {
-            if (running) { // Log error only if the connection was supposed to be active
+            if (running) {
                 logger.warn("SocketException for peer {}: {} (Connection likely closed by peer or network issue)", peerId, se.getMessage());
             }
         } catch (IOException e) {
@@ -150,51 +144,63 @@ public class P2PConnection implements Runnable {
                 logger.error("IOException in P2PConnection for peer {}: {}", peerId, e.getMessage(), e);
             }
         } finally {
-            if (running) { // If still running, means it was an unexpected closure
+            if (running) {
                 logger.info("Connection with peer {} ended unexpectedly.", peerId);
             }
-            close(); // Ensure cleanup
+            close();
         }
         logger.debug("P2PConnection listener thread for peer {} finished.", peerId);
     }
 
     /**
-     * Sends a message to the connected peer.
-     * If the handshake is complete and a session key is available, the message will be encrypted.
-     * Otherwise, a warning is logged, and the message is not sent.
+     * Sends a {@link Message} object to the connected peer.
+     * The message is first serialized to JSON by {@link MessageService},
+     * then encrypted using the session AES key, and finally sent over the socket.
+     * If the handshake is not complete or the session key is not available,
+     * a warning is logged, and the message is not sent.
      *
-     * @param message The plain text message to send.
+     * @param message The {@link Message} object to send.
      */
-    public void sendMessage(String message) {
+    public void sendMessage(Message message) {
         if (!running || socket.isClosed()) {
             logger.warn("Cannot send message to {}: Connection is not active.", peerId);
             return;
         }
 
         if (!handshakeComplete || sessionAesKey == null) {
-            logger.warn("Cannot send message to {}: Handshake not complete or session key not available.", peerId);
+            logger.warn("Cannot send message to {}: Handshake not complete or session key not available. Message: {}", peerId, message);
+            return;
+        }
+
+        if (message == null) {
+            logger.warn("Cannot send a null message object to peer {}.", peerId);
             return;
         }
 
         try {
-            logger.debug("Attempting to encrypt and send message to {}: {}", peerId, message.length() > 50 ? message.substring(0, 50) + "..." : message);
+            String jsonMessage = messageService.prepareOutgoingMessage(message);
+            if (jsonMessage == null) {
+                logger.error("Failed to serialize message for peer {}: {}. Message not sent.", peerId, message);
+                return;
+            }
 
-            // Encrypt the message using the session AES key
-            // encryptWithAesKey returns a Base64 encoded string directly
-            String encryptedMessageB64 = encryptionService.encryptWithAesKey(message.getBytes(StandardCharsets.UTF_8), sessionAesKey);
+            logger.debug("Attempting to encrypt and send JSON message to {}: {}", peerId, jsonMessage.length() > 100 ? jsonMessage.substring(0,100)+"..." : jsonMessage);
+
+            String encryptedMessageB64 = encryptionService.encryptWithAesKey(jsonMessage.getBytes(StandardCharsets.UTF_8), sessionAesKey);
 
             if (encryptedMessageB64 != null) {
-                // Send the Base64 encoded encrypted message as bytes
                 outputStream.write(encryptedMessageB64.getBytes(StandardCharsets.UTF_8));
                 outputStream.flush();
-                logger.info("Sent encrypted message ({} bytes) to {}", encryptedMessageB64.length(), peerId);
+                logger.info("Sent encrypted JSON message ({} bytes) to {}", encryptedMessageB64.length(), peerId);
             } else {
-                logger.error("Failed to encrypt message for peer {}. Message not sent.", peerId);
+                logger.error("Failed to encrypt JSON message for peer {}. Message not sent.", peerId);
             }
         } catch (IOException e) {
-            logger.error("Failed to send message to peer {}: {}", peerId, e.getMessage(), e);
-            // Consider closing the connection if a send error occurs, as it might be unrecoverable
+            logger.error("IOException while sending message to peer {}: {}", peerId, e.getMessage(), e);
             close();
+        } catch (Exception e) { // Catch other potential runtime exceptions from services
+            logger.error("Unexpected error while sending message to peer {}: {}", peerId, e.getMessage(), e);
+            // Optionally close connection on unexpected errors too
         }
     }
 
@@ -204,16 +210,15 @@ public class P2PConnection implements Runnable {
      */
     public void close() {
         if (running) {
-            running = false; // Signal the listening loop to stop
+            running = false;
             try {
                 if (socket != null && !socket.isClosed()) {
-                    socket.close(); // This will interrupt the blocking read in the run() method
+                    socket.close();
                 }
                 logger.info("P2PConnection closed for peer: {}", peerId);
             } catch (IOException e) {
                 logger.error("Error closing P2PConnection socket for peer {}: {}", peerId, e.getMessage(), e);
             } finally {
-                // Notify the manager to remove this connection from active list
                 if (connectionManager != null) {
                     connectionManager.removeConnection(peerId);
                 }
@@ -263,7 +268,6 @@ public class P2PConnection implements Runnable {
 
         @Override
         public void startListening() {
-            // Do nothing for a placeholder
             logger.debug("startListening called on Placeholder for {}, no action taken.", placeholderPeerId);
         }
 
@@ -273,20 +277,18 @@ public class P2PConnection implements Runnable {
         }
 
         @Override
-        public void sendMessage(String message) {
+        public void sendMessage(Message message) { // Parameter changed to Message
             logger.warn("sendMessage called on Placeholder for peer {}. Message not sent.", placeholderPeerId);
-            // Do nothing, or throw an exception, as this shouldn't be called on a placeholder
         }
 
         @Override
         public void close() {
-            // Do nothing for a placeholder, it's just a marker
             logger.debug("close called on Placeholder for {}, no action taken.", placeholderPeerId);
         }
 
         @Override
         public boolean isActive() {
-            return false; // Placeholders are never active connections
+            return false;
         }
 
         @Override

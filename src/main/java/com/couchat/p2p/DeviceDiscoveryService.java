@@ -1,5 +1,6 @@
 package com.couchat.p2p;
 
+import com.couchat.auth.PasskeyAuthService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -22,48 +23,68 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Service for discovering other CouChat devices on the local network using multicast.
+ * It broadcasts this device's presence and listens for broadcasts from other peers.
+ * Relies on {@link PasskeyAuthService} to obtain the local peer ID.
+ */
 @Service
 public class DeviceDiscoveryService {
 
     private static final Logger logger = LoggerFactory.getLogger(DeviceDiscoveryService.class);
-    private static final String MULTICAST_ADDRESS = "230.0.0.1"; // Example multicast address
-    private static final int DISCOVERY_PORT = 8888; // Example discovery port
-    private static final int BROADCAST_INTERVAL_MS = 5000; // Broadcast every 5 seconds
-    private static final int PEER_TIMEOUT_MS = 15000; // Peer considered offline after 15 seconds
+    private static final String MULTICAST_ADDRESS = "230.0.0.1";
+    private static final int DISCOVERY_PORT = 8888;
+    private static final int BROADCAST_INTERVAL_MS = 5000;
+    private static final int PEER_TIMEOUT_MS = 15000;
+
+    private final PasskeyAuthService passkeyAuthService;
 
     private MulticastSocket multicastSocket;
-    private DatagramSocket unicastSocket; // For responding to discovery requests or direct communication
+    private DatagramSocket unicastSocket;
     private InetAddress group;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private final ConcurrentHashMap<String, DiscoveredPeer> discoveredPeers = new ConcurrentHashMap<>();
-    private String localPeerId; // Unique ID for this device, could be username or generated ID
+    private String localPeerId; // Will be set from PasskeyAuthService
     private int localServicePort; // The port on which main P2P services are running
+
+    /**
+     * Constructs a DeviceDiscoveryService.
+     *
+     * @param passkeyAuthService The service to get the local peer ID.
+     */
+    public DeviceDiscoveryService(PasskeyAuthService passkeyAuthService) {
+        this.passkeyAuthService = passkeyAuthService;
+    }
 
     @PostConstruct
     public void init() {
+        this.localPeerId = passkeyAuthService.getLocalPeerId();
+        if (this.localPeerId == null || this.localPeerId.isEmpty()) {
+            logger.error("DeviceDiscoveryService cannot initialize: Local Peer ID is not available from PasskeyAuthService.");
+            // Depending on the application's requirements, you might want to throw an exception here
+            // or prevent the service from starting its network operations.
+            return;
+        }
+
         try {
-            localPeerId = InetAddress.getLocalHost().getHostName() + "_" + System.currentTimeMillis(); // Simple unique ID
             // It's better to get the actual service port from configuration or another service
-            // For now, let's assume a placeholder or that it will be set
-            localServicePort = 9090; // Placeholder for actual P2P service port
+            // For now, let's assume a placeholder or that it will be set by P2PConnectionManager
+            // localServicePort = 9090; // Placeholder, will be set via setLocalServicePort
 
             group = InetAddress.getByName(MULTICAST_ADDRESS);
 
-            // Setup MulticastSocket for discovery
             multicastSocket = new MulticastSocket(DISCOVERY_PORT);
-            multicastSocket.joinGroup(group); // Join the multicast group
-            logger.info("Joined multicast group {} on port {}", MULTICAST_ADDRESS, DISCOVERY_PORT);
+            multicastSocket.joinGroup(group);
+            logger.info("Joined multicast group {} on port {}. Local Peer ID for discovery: {}", MULTICAST_ADDRESS, DISCOVERY_PORT, localPeerId);
 
-            // Setup UnicastSocket for potential direct responses if needed (optional for pure discovery)
-            unicastSocket = new DatagramSocket(); // Or a specific port if it needs to be known
-            logger.info("Unicast socket started on port {}", unicastSocket.getLocalPort());
-
+            unicastSocket = new DatagramSocket();
+            logger.info("Unicast socket started on port {} for discovery responses (if implemented).", unicastSocket.getLocalPort());
 
             scheduler.scheduleAtFixedRate(this::broadcastPresence, 0, BROADCAST_INTERVAL_MS, TimeUnit.MILLISECONDS);
             scheduler.execute(this::listenForPeers);
             scheduler.scheduleAtFixedRate(this::cleanupInactivePeers, PEER_TIMEOUT_MS, PEER_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
-            logger.info("DeviceDiscoveryService initialized. Local Peer ID: {}", localPeerId);
+            logger.info("DeviceDiscoveryService initialized successfully.");
 
         } catch (UnknownHostException e) {
             logger.error("Multicast address unknown: {}", MULTICAST_ADDRESS, e);
@@ -80,6 +101,14 @@ public class DeviceDiscoveryService {
             String localIp = getLocalIpAddress();
             if (localIp == null) {
                 logger.warn("Could not determine local IP address for broadcasting presence.");
+                return;
+            }
+            if (localPeerId == null || localPeerId.isEmpty()) {
+                logger.warn("Cannot broadcast presence: Local Peer ID is not set.");
+                return;
+            }
+            if (localServicePort <= 0) {
+                logger.warn("Cannot broadcast presence: Local service port is not set or invalid ({}).", localServicePort);
                 return;
             }
             // Message format: PEER_ID:IP_ADDRESS:SERVICE_PORT
@@ -185,11 +214,25 @@ public class DeviceDiscoveryService {
     }
 
     public void setLocalServicePort(int port) {
+        if (port <= 0) {
+            logger.warn("Attempted to set an invalid local service port: {}", port);
+            return;
+        }
         this.localServicePort = port;
-        // Potentially re-broadcast immediately with new info if needed
-        // broadcastPresence();
+        logger.info("Local service port set to: {}. Future presence broadcasts will use this port.", port);
+        // Optionally, broadcast presence immediately if the service is already active
+        // and the port was just updated to a valid one.
+        if (passkeyAuthService.isAuthenticated() && this.localPeerId != null && !this.localPeerId.isEmpty()) {
+             // broadcastPresence(); // Consider if immediate broadcast is needed or wait for next scheduled one.
+        }
     }
 
+    /**
+     * Gets the local peer ID used for device discovery and P2P communication.
+     * This ID is retrieved from the {@link PasskeyAuthService}.
+     *
+     * @return The local peer ID.
+     */
     public String getLocalPeerId() {
         return localPeerId;
     }
