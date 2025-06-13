@@ -1,106 +1,108 @@
 package com.couchat.auth;
 
+import com.couchat.device.model.Device;
+import com.couchat.repository.DeviceRepository;
+import com.couchat.user.model.User;
+import com.couchat.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-
 import jakarta.annotation.PostConstruct;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.Properties;
+import java.util.List; // Added import
+import java.util.Optional;
 import java.util.UUID;
 
+// TODO: This class needs significant refactoring to align with the new database schema
+// and a proper Passkey (WebAuthn) flow. The current file-based storage is a placeholder.
+
 /**
- * Manages device passkey authentication.
- * On first run, generates a unique user ID (peer ID) and a device passkey.
- * These are stored in a properties file in the user's home directory.
- * Subsequent runs load these credentials.
+ * Manages device passkey authentication and user association.
+ * Placeholder: Current implementation uses local file storage for a single user/device concept.
+ * This needs to be refactored to use the database (DeviceRepository, UserRepository)
+ * and integrate with a proper Passkey (WebAuthn server-side) flow.
  */
 @Service
 public class PasskeyAuthService {
 
     private static final Logger logger = LoggerFactory.getLogger(PasskeyAuthService.class);
 
-    private static final String CONFIG_DIR_NAME = ".couchat";
-    private static final String PROPERTIES_FILE_NAME = "user.properties";
-    private static final String KEY_USER_ID = "user.id";
-    private static final String KEY_DEVICE_PASSKEY = "device.passkey";
+    // Dependencies for database interaction (to be used in refactored version)
+    private final DeviceRepository deviceRepository;
+    private final UserRepository userRepository;
 
-    private String localPeerId;
-    private String devicePasskey;
+    // Old file-based properties (to be deprecated/removed)
+    // private static final String CONFIG_DIR_NAME = ".couchat";
+    // private static final String PROPERTIES_FILE_NAME = "user.properties";
+    // private static final String KEY_USER_ID = "user.id";
+    // private static final String KEY_DEVICE_PASSKEY = "device.passkey";
+
+    private String localUserId; // Represents the currently "logged-in" user for this device instance
+    private String currentDeviceId; // Represents this specific device instance
     private boolean authenticated = false;
+
+    @Autowired
+    public PasskeyAuthService(DeviceRepository deviceRepository, UserRepository userRepository) {
+        this.deviceRepository = deviceRepository;
+        this.userRepository = userRepository;
+    }
 
     @PostConstruct
     public void init() {
-        File configDir = new File(System.getProperty("user.home"), CONFIG_DIR_NAME);
-        File configFile = new File(configDir, PROPERTIES_FILE_NAME);
+        // TODO: Refactor init() to:
+        // 1. Check if a device_id is stored locally (e.g., in a secure properties file or OS secure storage).
+        // 2. If found, try to load the device from DeviceRepository.
+        // 3. If not found, or if this is a "new registration" flow, guide user through user creation/login
+        //    and then device registration (Passkey creation).
+        // The old file-based logic is commented out as it's not compatible with multi-user/multi-device.
+        logger.warn("PasskeyAuthService.init() needs complete refactoring for database and proper Passkey flow.");
+        // For now, let's simulate a default user/device for demo if nothing else is set up.
+        // This is a placeholder for development and should not be used in production.
+        // initializeOrRegisterPlaceholderDevice(); // Called by isAuthenticated or getLocalUserId if needed
+    }
 
-        Properties properties = new Properties();
+    // Placeholder for a simplified device registration / retrieval for demo purposes
+    // This would be replaced by actual Passkey registration and login flows.
+    private void initializeOrRegisterPlaceholderDevice() {
+        if (this.authenticated) return; // Already initialized
 
-        if (configFile.exists() && configFile.isFile()) {
-            try (InputStream input = new FileInputStream(configFile)) {
-                properties.load(input);
-                this.localPeerId = properties.getProperty(KEY_USER_ID);
-                this.devicePasskey = properties.getProperty(KEY_DEVICE_PASSKEY);
-
-                if (this.localPeerId != null && !this.localPeerId.isEmpty() &&
-                    this.devicePasskey != null && !this.devicePasskey.isEmpty()) {
-                    this.authenticated = true;
-                    logger.info("User properties loaded successfully. Peer ID: {}", this.localPeerId);
-                } else {
-                    logger.warn("User properties file found, but content is invalid. Regenerating credentials.");
-                    generateAndStoreCredentials(configFile, properties);
-                }
-            } catch (IOException e) {
-                logger.error("Failed to load user properties from {}. Regenerating credentials.", configFile.getAbsolutePath(), e);
-                generateAndStoreCredentials(configFile, properties);
-            }
-        } else {
-            logger.info("User properties file not found at {}. Generating new credentials.", configFile.getAbsolutePath());
-            if (!configDir.exists()) {
-                if (configDir.mkdirs()) {
-                    logger.info("Created configuration directory: {}", configDir.getAbsolutePath());
-                } else {
-                    logger.error("Failed to create configuration directory: {}. Credentials will not be persisted.", configDir.getAbsolutePath());
-                    // Fallback: generate in-memory for current session if directory creation fails
-                    generateInMemoryCredentials();
-                    return;
-                }
-            }
-            generateAndStoreCredentials(configFile, properties);
+        logger.info("Attempting to initialize placeholder device and user...");
+        // Try to find a "default" user or create one
+        Optional<User> userOpt = userRepository.findByUsername("defaultUser");
+        User user;
+        if (userOpt.isEmpty()) {
+            user = new User("defaultUser"); // Uses constructor that generates UUID for userId
+            // user.setPasswordHash(generateSecurePasskey()); // Simulate a password/passkey - not strictly needed for this placeholder
+            userRepository.save(user);
+            logger.info("Created placeholder user: {} with ID: {}", user.getUsername(), user.getUserId());
         }
-    }
-
-    private void generateAndStoreCredentials(File configFile, Properties properties) {
-        this.localPeerId = UUID.randomUUID().toString();
-        this.devicePasskey = generateSecurePasskey();
-        this.authenticated = true;
-
-        properties.setProperty(KEY_USER_ID, this.localPeerId);
-        properties.setProperty(KEY_DEVICE_PASSKEY, this.devicePasskey);
-
-        try (OutputStream output = new FileOutputStream(configFile)) {
-            properties.store(output, "CouChat User Properties");
-            logger.info("New user credentials generated and stored successfully. Peer ID: {}", this.localPeerId);
-        } catch (IOException e) {
-            logger.error("Failed to store user properties to {}. Credentials will be in-memory for this session.", configFile.getAbsolutePath(), e);
-            // If storing fails, we still have them in memory for the current session.
+        else {
+            user = userOpt.get();
+            logger.info("Found existing placeholder user: {} with ID: {}", user.getUsername(), user.getUserId());
         }
+        this.localUserId = user.getUserId();
+
+        // Try to find a device for this user or create one
+        List<Device> devices = deviceRepository.findByUserId(this.localUserId);
+        Device device;
+        if (devices.isEmpty()) {
+            device = new Device(this.localUserId, "Default Device"); // Uses constructor that generates UUID for deviceId
+            // Simulate a passkey credential ID being stored
+            // device.setPasskeyCredentialId(Base64.getUrlEncoder().encodeToString(UUID.randomUUID().toString().getBytes()));
+            deviceRepository.save(device);
+            logger.info("Created placeholder device: {} for user {}", device.getDeviceId(), this.localUserId);
+        }
+        else {
+            device = devices.get(0); // Just take the first one for this placeholder
+            logger.info("Found existing placeholder device: {} for user {}", device.getDeviceId(), this.localUserId);
+        }
+        this.currentDeviceId = device.getDeviceId();
+        this.authenticated = true;
+        logger.info("Placeholder authentication complete. UserID: {}, DeviceID: {}", this.localUserId, this.currentDeviceId);
     }
 
-    private void generateInMemoryCredentials() {
-        this.localPeerId = UUID.randomUUID().toString();
-        this.devicePasskey = generateSecurePasskey();
-        this.authenticated = true;
-        logger.warn("Using in-memory credentials for this session as directory creation/writing failed.");
-    }
 
     private String generateSecurePasskey() {
         SecureRandom random = new SecureRandom();
@@ -110,32 +112,52 @@ public class PasskeyAuthService {
     }
 
     /**
-     * Gets the local peer ID for this user/installation.
-     * This ID is used for P2P communication.
+     * Gets the local user ID for the current authenticated session.
+     * TODO: This needs to be tied to an actual login session.
      *
-     * @return The local peer ID, or null if authentication failed.
+     * @return The local user ID, or null if not authenticated (after trying placeholder init).
      */
-    public String getLocalPeerId() {
-        return localPeerId;
+    public String getLocalUserId() {
+        if (!authenticated) {
+            logger.warn("Attempted to get localUserId, but not authenticated. Triggering placeholder init.");
+            initializeOrRegisterPlaceholderDevice();
+        }
+        return localUserId;
     }
 
     /**
-     * Gets the device passkey.
-     * This passkey can be used to protect local sensitive data, such as cryptographic keys.
+     * Gets the current device ID for this instance.
+     * TODO: This needs to be tied to an actual device registration and session.
      *
-     * @return The device passkey, or null if authentication failed.
+     * @return The current device ID, or null if not identified (after trying placeholder init).
      */
-    public String getDevicePasskey() {
-        return devicePasskey;
+    public String getCurrentDeviceId() {
+         if (!authenticated) {
+            logger.warn("Attempted to get currentDeviceId, but not authenticated. Triggering placeholder init.");
+            initializeOrRegisterPlaceholderDevice();
+        }
+        return currentDeviceId;
     }
 
     /**
-     * Checks if the user/device has been authenticated (i.e., credentials loaded or generated).
+     * Checks if the current session is considered authenticated.
+     * TODO: This needs to be based on a proper authentication flow.
      *
      * @return True if authenticated, false otherwise.
      */
     public boolean isAuthenticated() {
+        if (!authenticated) {
+             // logger.info("isAuthenticated() called: Not authenticated, attempting placeholder initialization.");
+             // initializeOrRegisterPlaceholderDevice(); // Let getLocalUserId or getCurrentDeviceId trigger this if needed.
+        }
         return authenticated;
     }
-}
 
+    // TODO: Add methods for Passkey registration (begin, finish)
+    // public RegistrationResponse beginRegistration(String username) { ... }
+    // public boolean finishRegistration(String username, String registrationJson) { ... }
+
+    // TODO: Add methods for Passkey authentication (begin, finish)
+    // public AuthenticationResponse beginAuthentication(String username) { ... }
+    // public boolean finishAuthentication(String username, String authenticationJson) { ... }
+}

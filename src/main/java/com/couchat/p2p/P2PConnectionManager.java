@@ -82,13 +82,13 @@ public class P2PConnectionManager {
      */
     @PostConstruct
     public void init() {
-        this.localPeerId = passkeyAuthService.getLocalPeerId();
+        this.localPeerId = passkeyAuthService.getLocalUserId();
         if (this.localPeerId == null || this.localPeerId.isEmpty()) {
-            logger.error("P2PConnectionManager cannot initialize: Local Peer ID is not available from PasskeyAuthService.");
+            logger.error("P2PConnectionManager cannot initialize: Local User ID is not available from PasskeyAuthService.");
             // Application might need to be halted or run in a degraded mode if peer ID is essential.
             return;
         }
-        logger.info("P2PConnectionManager initializing with Local Peer ID: {}", this.localPeerId);
+        logger.info("P2PConnectionManager initializing with Local User ID: {}", this.localPeerId);
 
         try {
             this.servicePort = deviceDiscoveryService.getLocalServicePort();

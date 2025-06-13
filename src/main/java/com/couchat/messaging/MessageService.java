@@ -257,6 +257,22 @@ public class MessageService {
         }
     }
 
+    // Helper method to determine conversation ID
+    private String determineConversationId(String userId1, String userId2) {
+        if (userId1 == null || userId2 == null) {
+            logger.warn("Cannot determine conversation ID: one or both user IDs are null.");
+            // Fallback or throw an error, depending on desired behavior.
+            // For now, returning a placeholder, but this should be handled robustly.
+            return "unknown_conversation_id";
+        }
+        // Consistent ID regardless of order
+        if (userId1.compareTo(userId2) < 0) {
+            return userId1 + "_" + userId2;
+        } else {
+            return userId2 + "_" + userId1;
+        }
+    }
+
     // Example of creating a specific type of message (can be in a factory or helper class too)
     /**
      * Creates a new text message.
@@ -267,7 +283,8 @@ public class MessageService {
      * @return A {@link Message} object of type TEXT.
      */
     public Message createTextMessage(String senderId, String recipientId, String textContent) {
-        return new Message(Message.MessageType.TEXT, senderId, recipientId, textContent);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.TEXT, senderId, recipientId, textContent);
     }
 
     /**
@@ -280,10 +297,9 @@ public class MessageService {
      * @return A {@link Message} object of type TEXT, with originalMessageId set.
      */
     public Message createReplyTextMessage(String senderId, String recipientId, String textContent, String originalMessageId) {
-        Message replyMessage = new Message(Message.MessageType.TEXT, senderId, recipientId, textContent);
+        String conversationId = determineConversationId(senderId, recipientId);
+        Message replyMessage = new Message(conversationId, Message.MessageType.TEXT, senderId, recipientId, textContent);
         replyMessage.setOriginalMessageId(originalMessageId);
-        // Optionally set status to PENDING or SENT immediately
-        // replyMessage.setStatus(Message.MessageStatus.PENDING);
         return replyMessage;
     }
 
@@ -297,7 +313,8 @@ public class MessageService {
      * @return A {@link Message} object of type FILE_INFO.
      */
     public Message createFileInfoMessage(String senderId, String recipientId, FileInfo fileInfo) {
-        return new Message(Message.MessageType.FILE_INFO, senderId, recipientId, fileInfo);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.FILE_INFO, senderId, recipientId, fileInfo);
     }
 
     /**
@@ -310,7 +327,8 @@ public class MessageService {
      * @return A {@link Message} object of type FILE_CHUNK.
      */
     public Message createFileChunkMessage(String senderId, String recipientId, FileChunk fileChunk) {
-        return new Message(Message.MessageType.FILE_CHUNK, senderId, recipientId, fileChunk);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.FILE_CHUNK, senderId, recipientId, fileChunk);
     }
 
     /**
@@ -322,7 +340,8 @@ public class MessageService {
      * @return A {@link Message} object of type FILE_TRANSFER_ACCEPTED.
      */
     public Message createFileTransferAcceptedMessage(String senderId, String recipientId, String fileId) {
-        return new Message(Message.MessageType.FILE_TRANSFER_ACCEPTED, senderId, recipientId, fileId);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.FILE_TRANSFER_ACCEPTED, senderId, recipientId, fileId);
     }
 
     /**
@@ -335,7 +354,8 @@ public class MessageService {
      * @return A {@link Message} object of type FILE_TRANSFER_COMPLETE.
      */
     public Message createFileTransferCompleteMessage(String senderId, String recipientId, String fileId) {
-        return new Message(Message.MessageType.FILE_TRANSFER_COMPLETE, senderId, recipientId, fileId);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.FILE_TRANSFER_COMPLETE, senderId, recipientId, fileId);
     }
 
     /**
@@ -348,15 +368,12 @@ public class MessageService {
      * @return A {@link Message} object of type FILE_TRANSFER_ERROR.
      */
     public Message createFileTransferErrorMessage(String senderId, String recipientId, String fileId, String errorMessage) {
-        // For a more structured error, you might send a Map or a dedicated error object
-        // For now, sending a simple message, but FileTransferService expects a Map for detailed errors.
-        // Let's create a map payload for consistency with how it might be handled.
+        String conversationId = determineConversationId(senderId, recipientId);
         Map<String, String> payload = new java.util.HashMap<>();
         payload.put("fileId", fileId);
         payload.put("errorMessage", errorMessage);
-        // You could add an "errorCode" field here too if you define a set of error codes.
         payload.put("errorCode", "GENERIC_ERROR"); // Example error code
-        return new Message(Message.MessageType.FILE_TRANSFER_ERROR, senderId, recipientId, payload);
+        return new Message(conversationId, Message.MessageType.FILE_TRANSFER_ERROR, senderId, recipientId, payload);
     }
 
     /**
@@ -368,6 +385,7 @@ public class MessageService {
      * @return A {@link Message} object of type READ_RECEIPT.
      */
     public Message createReadReceiptMessage(String senderId, String recipientId, String readMessageId) {
-        return new Message(Message.MessageType.READ_RECEIPT, senderId, recipientId, readMessageId);
+        String conversationId = determineConversationId(senderId, recipientId);
+        return new Message(conversationId, Message.MessageType.READ_RECEIPT, senderId, recipientId, readMessageId);
     }
 }

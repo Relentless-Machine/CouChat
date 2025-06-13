@@ -49,6 +49,15 @@ class P2PConnectionTest {
     private static final String REMOTE_PEER_ID = "remoteTestPeer";
     private SecretKey testSessionKey;
 
+    // Helper method to determine conversation ID for tests
+    private String determineConversationId(String userId1, String userId2) {
+        if (userId1.compareTo(userId2) < 0) {
+            return userId1 + "_" + userId2;
+        } else {
+            return userId2 + "_" + userId1;
+        }
+    }
+
     @BeforeEach
     void setUp() throws IOException {
         // Generate a dummy AES key for testing
@@ -94,12 +103,7 @@ class P2PConnectionTest {
     @Test
     void testSendMessage_HandshakeNotComplete() {
         logger.info("Testing sendMessage when handshake is not complete...");
-        // Message testMessage = new Message(); // Create a dummy Message object
-        // testMessage.setContent("Hello World");
-        // For P2PConnection, a full Message object might not be needed if it exits early.
-        // However, to align with Message class constructor, we should provide necessary fields if we were to create one.
-        // For this test, the call to sendMessage should ideally not even reach message preparation.
-        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
+        Message testMessage = new Message(determineConversationId(LOCAL_PEER_ID, REMOTE_PEER_ID), Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
 
         // Simulate messageService.prepareOutgoingMessage if it's called even when handshake is not complete
         // For this test, we assume P2PConnection checks handshake status *before* calling prepareOutgoingMessage.
@@ -119,10 +123,7 @@ class P2PConnectionTest {
     void testSendMessage_SessionKeyNotAvailable() {
         logger.info("Testing sendMessage when session key is not available (but handshake marked complete)...");
         p2pConnection.setHandshakeComplete(); // Mark handshake as complete
-        // Session key is still null
-        // Message testMessage = new Message(); // Create a dummy Message object
-        // testMessage.setContent("Hello World");
-        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
+        Message testMessage = new Message(determineConversationId(LOCAL_PEER_ID, REMOTE_PEER_ID), Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Hello World");
 
         // As above, assume P2PConnection checks session key status *before* calling prepareOutgoingMessage.
         // when(mockMessageService.prepareOutgoingMessage(any(Message.class))).thenReturn("{\\"content\\":\\"Hello World\\"}");
@@ -142,9 +143,7 @@ class P2PConnectionTest {
         p2pConnection.setHandshakeComplete();
 
         String messageContent = "This is a test message.";
-        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, messageContent);
-        // testMessage.setId("msg1"); // ID is auto-generated
-        // testMessage.setTimestamp(System.currentTimeMillis()); // Timestamp is auto-generated
+        Message testMessage = new Message(determineConversationId(LOCAL_PEER_ID, REMOTE_PEER_ID), Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, messageContent);
 
         // Simplified and direct JSON string for the test
         // ObjectMapper in MessageService will handle actual serialization.
@@ -178,9 +177,7 @@ class P2PConnectionTest {
         p2pConnection.setSessionAesKey(testSessionKey);
         p2pConnection.setHandshakeComplete();
 
-        // Message testMessage = new Message();
-        // testMessage.setContent("Another test message.");
-        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
+        Message testMessage = new Message(determineConversationId(LOCAL_PEER_ID, REMOTE_PEER_ID), Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
 
         when(mockMessageService.prepareOutgoingMessage(eq(testMessage))).thenReturn(null); // Simulate serialization failure
 
@@ -199,9 +196,7 @@ class P2PConnectionTest {
         p2pConnection.setSessionAesKey(testSessionKey);
         p2pConnection.setHandshakeComplete();
 
-        // Message testMessage = new Message();
-        // testMessage.setContent("Another test message.");
-        Message testMessage = new Message(Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
+        Message testMessage = new Message(determineConversationId(LOCAL_PEER_ID, REMOTE_PEER_ID), Message.MessageType.TEXT, LOCAL_PEER_ID, REMOTE_PEER_ID, "Another test message.");
         // Simplified JSON string
         String serializedMessageJson = "{\"payload\":\"Another test message.\"}"; // Simplified for mocking
         byte[] serializedMessageBytes = serializedMessageJson.getBytes(StandardCharsets.UTF_8);

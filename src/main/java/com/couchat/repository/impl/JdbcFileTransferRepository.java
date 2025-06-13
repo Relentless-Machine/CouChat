@@ -1,4 +1,4 @@
-1package com.couchat.repository.impl;
+package com.couchat.repository.impl;
 
 import com.couchat.repository.FileTransferRepository;
 import com.couchat.transfer.model.FileTransfer;
@@ -196,4 +196,5 @@ public class JdbcFileTransferRepository implements FileTransferRepository {
         }
     }
 }
+
 

@@ -145,14 +145,14 @@ public class Message implements Serializable {
     @Override
     public String toString() {
         return "Message{" +
-                "messageId='" + messageId + '\\'' +
-                ", conversationId='" + conversationId + '\\'' +
+                "messageId='" + messageId + "'" +
+                ", conversationId='" + conversationId + "'" +
                 ", type=" + type +
-                ", senderId='" + senderId + '\\'' +
-                ", recipientId='" + recipientId + '\\'' +
+                ", senderId='" + senderId + "'" +
+                ", recipientId='" + recipientId + "'" +
                 ", timestamp=" + timestamp +
                 ", payload=" + (payload instanceof String && ((String) payload).length() > 50 ? ((String)payload).substring(0,50) + "..." : payload) +
-                (originalMessageId != null ? ", originalMessageId='" + originalMessageId + '\\'' : "") +
+                (originalMessageId != null ? ", originalMessageId='" + originalMessageId + "'" : "") +
                 (status != null ? ", status=" + status : "") +
                 '}';
     }

@@ -57,9 +57,9 @@ public class MessageController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("User not authenticated.");
         }
 
-        String localPeerId = passkeyAuthService.getLocalPeerId();
-        if (localPeerId == null || localPeerId.isEmpty()) {
-            logger.error("Send message request failed: Local peer ID is not available.");
+        String localUserId = passkeyAuthService.getLocalUserId();
+        if (localUserId == null || localUserId.isEmpty()) {
+            logger.error("Send message request failed: Local user ID is not available.");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Local user ID not available.");
         }
 
@@ -69,23 +69,22 @@ public class MessageController {
             return ResponseEntity.badRequest().body("Recipient ID and content must be provided.");
         }
 
-        logger.info("Received request to send message from {} to {}: {}", localPeerId, request.getRecipientId(), request.getContent());
+        logger.info("Received request to send message from {} to {}: {}", localUserId, request.getRecipientId(), request.getContent());
 
         try {
             Message textMessage = messageService.createTextMessage(
-                    localPeerId,
+                    localUserId,
                     request.getRecipientId(),
                     request.getContent()
             );
 
             p2pConnectionManager.sendMessage(request.getRecipientId(), textMessage);
-            logger.info("Message queued for sending from {} to {}. Message ID: {}", localPeerId, request.getRecipientId(), textMessage.getMessageId());
+            logger.info("Message queued for sending from {} to {}. Message ID: {}", localUserId, request.getRecipientId(), textMessage.getMessageId());
             return ResponseEntity.ok("Message sent successfully. ID: " + textMessage.getMessageId());
         } catch (Exception e) {
             logger.error("Failed to send message from {} to {}. Content: {}. Error: {}",
-                         localPeerId, request.getRecipientId(), request.getContent(), e.getMessage(), e);
+                         localUserId, request.getRecipientId(), request.getContent(), e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to send message: " + e.getMessage());
         }
     }
 }
-

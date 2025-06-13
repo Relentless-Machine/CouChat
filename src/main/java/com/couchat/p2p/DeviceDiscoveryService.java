@@ -58,9 +58,9 @@ public class DeviceDiscoveryService {
 
     @PostConstruct
     public void init() {
-        this.localPeerId = passkeyAuthService.getLocalPeerId();
+        this.localPeerId = passkeyAuthService.getLocalUserId();
         if (this.localPeerId == null || this.localPeerId.isEmpty()) {
-            logger.error("DeviceDiscoveryService cannot initialize: Local Peer ID is not available from PasskeyAuthService.");
+            logger.error("DeviceDiscoveryService cannot initialize: Local User ID is not available from PasskeyAuthService.");
             // Depending on the application's requirements, you might want to throw an exception here
             // or prevent the service from starting its network operations.
             return;

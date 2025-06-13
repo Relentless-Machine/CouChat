@@ -93,7 +93,7 @@ public class FileTransferService {
             logger.warn("Cannot initiate file transfer: User not authenticated.");
             return null;
         }
-        String localPeerId = passkeyAuthService.getLocalPeerId();
+        String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
 
         File file = new File(filePath);
         if (!file.exists() || !file.isFile() || !file.canRead()) {
@@ -121,7 +121,7 @@ public class FileTransferService {
         transfer.setStatus(FileTransferStatus.AWAITING_ACCEPTANCE); // Set status to AWAITING_ACCEPTANCE
         outgoingTransfers.put(fileId, transfer);
 
-        Message fileInfoMessage = messageService.createFileInfoMessage(localPeerId, recipientId, fileInfo);
+        Message fileInfoMessage = messageService.createFileInfoMessage(localUserId, recipientId, fileInfo); // Corrected
         p2pConnectionManager.sendMessage(recipientId, fileInfoMessage);
 
         logger.info("Initiated file transfer, awaiting acceptance. File ID: {}, Name: {}, Recipient: {}. FILE_INFO message sent.",
@@ -188,7 +188,7 @@ public class FileTransferService {
 
         transfer.setStatus(FileTransferStatus.SENDING_CHUNKS);
         logger.info("Starting to send chunks for file ID: {}, File: {}", fileId, transfer.getFilePath());
-        final String localPeerId = passkeyAuthService.getLocalPeerId(); // Ensure localPeerId is effectively final for lambda
+        final String localUserId = passkeyAuthService.getLocalUserId(); // Ensure localUserId is effectively final for lambda
 
         fileTransferExecutor.submit(() -> {
             try (InputStream inputStream = new FileInputStream(transfer.getFilePath())) {
@@ -198,7 +198,7 @@ public class FileTransferService {
 
                 if (transfer.getFileInfo().getFileSize() == 0) { // Handle zero-byte file
                      FileChunk emptyChunk = new FileChunk(fileId, 0, new byte[0]);
-                     Message chunkMessage = messageService.createFileChunkMessage(localPeerId, transfer.getRecipientId(), emptyChunk);
+                     Message chunkMessage = messageService.createFileChunkMessage(localUserId, transfer.getRecipientId(), emptyChunk);
                      p2pConnectionManager.sendMessage(transfer.getRecipientId(), chunkMessage);
                      transfer.setChunksSent(1);
                      logger.debug("Sent empty chunk for zero-byte file ID: {}", fileId);
@@ -214,7 +214,7 @@ public class FileTransferService {
                         System.arraycopy(buffer, 0, actualChunkData, 0, bytesRead);
 
                         FileChunk fileChunk = new FileChunk(fileId, chunkIndex, actualChunkData);
-                        Message chunkMessage = messageService.createFileChunkMessage(localPeerId, transfer.getRecipientId(), fileChunk);
+                        Message chunkMessage = messageService.createFileChunkMessage(localUserId, transfer.getRecipientId(), fileChunk);
                         p2pConnectionManager.sendMessage(transfer.getRecipientId(), chunkMessage);
 
                         transfer.setChunksSent(chunkIndex + 1);
@@ -226,14 +226,14 @@ public class FileTransferService {
                 if (chunkIndex == transfer.getFileInfo().getTotalChunks()) {
                     transfer.setStatus(FileTransferStatus.COMPLETED);
                     logger.info("All chunks sent for file ID: {}. Transfer completed from sender side.", fileId);
-                    Message completeMessage = messageService.createFileTransferCompleteMessage(localPeerId, transfer.getRecipientId(), fileId);
+                    Message completeMessage = messageService.createFileTransferCompleteMessage(localUserId, transfer.getRecipientId(), fileId);
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), completeMessage);
                 } else if (transfer.getStatus() == FileTransferStatus.SENDING_CHUNKS) { // Only if not already failed/cancelled
                     // This case should ideally not happen if totalChunks is calculated correctly and file isn't modified
                     transfer.setStatus(FileTransferStatus.FAILED);
                     logger.error("Mismatch in sent chunks ({}) and total chunks ({}) for file ID: {}. Marking as failed.",
                                  chunkIndex, transfer.getFileInfo().getTotalChunks(), fileId);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, transfer.getRecipientId(), fileId, "Chunk sending mismatch");
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "Chunk sending mismatch");
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
 
@@ -241,14 +241,14 @@ public class FileTransferService {
                 logger.error("IOException while sending chunks for file ID: {}. Error: {}", fileId, e.getMessage(), e);
                 if (transfer.getStatus() != FileTransferStatus.FAILED) { // Avoid double error reporting
                     transfer.setStatus(FileTransferStatus.FAILED);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, transfer.getRecipientId(), fileId, "IO error during sending: " + e.getMessage());
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "IO error during sending: " + e.getMessage());
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
             } catch (Exception e) {
                 logger.error("Unexpected error while sending chunks for file ID: {}. Error: {}", fileId, e.getMessage(), e);
                  if (transfer.getStatus() != FileTransferStatus.FAILED) {
                     transfer.setStatus(FileTransferStatus.FAILED);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, transfer.getRecipientId(), fileId, "Unexpected error during sending: " + e.getMessage());
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "Unexpected error during sending: " + e.getMessage());
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
             }
@@ -302,9 +302,9 @@ public class FileTransferService {
                 logger.error("Too many file name collisions for base name '{}' in directory {}. Aborting transfer for fileId {}.",
                              baseName, this.incomingFilesPath, fileInfo.getFileId());
                 // Send FILE_TRANSFER_REJECTED or FILE_TRANSFER_ERROR back to sender
-                String localPeerId = passkeyAuthService.getLocalPeerId();
-                if (localPeerId != null) {
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, senderId, fileInfo.getFileId(), "File name collision or storage issue on recipient side.");
+                String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
+                if (localUserId != null) {
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileInfo.getFileId(), "File name collision or storage issue on recipient side.");
                     p2pConnectionManager.sendMessage(senderId, errorMessage);
                 }
                 return;
@@ -319,9 +319,9 @@ public class FileTransferService {
                     fileInfo.getFileId(), senderId, targetFilePath);
 
         // For prototype: Auto-accept the transfer
-        String localPeerId = passkeyAuthService.getLocalPeerId();
-        if (localPeerId != null) {
-            Message acceptedMessage = messageService.createFileTransferAcceptedMessage(localPeerId, senderId, fileInfo.getFileId());
+        String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
+        if (localUserId != null) {
+            Message acceptedMessage = messageService.createFileTransferAcceptedMessage(localUserId, senderId, fileInfo.getFileId());
             p2pConnectionManager.sendMessage(senderId, acceptedMessage);
             transfer.setStatus(FileTransferStatus.RECEIVING_CHUNKS);
             logger.info("Auto-accepted file transfer ID: {} from {}. Sent FILE_TRANSFER_ACCEPTED. Status set to RECEIVING_CHUNKS.", fileInfo.getFileId(), senderId);
@@ -398,18 +398,18 @@ public class FileTransferService {
             transfer.setStatus(FileTransferStatus.FAILED);
             transfer.closeAndCleanupFile(); // Ensure partial file is deleted
             // Send error message back to sender
-            String localPeerId = passkeyAuthService.getLocalPeerId();
-            if (localPeerId != null) {
-                Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, senderId, fileId, "IO error on recipient while writing chunk: " + e.getMessage());
+            String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
+            if (localUserId != null) {
+                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "IO error on recipient while writing chunk: " + e.getMessage());
                 p2pConnectionManager.sendMessage(senderId, errorMessage);
             }
         } catch (Exception e) {
             logger.error("Unexpected error while processing chunk for file ID: {}. Error: {}", fileId, e.getMessage(), e);
             transfer.setStatus(FileTransferStatus.FAILED);
             transfer.closeAndCleanupFile();
-            String localPeerId = passkeyAuthService.getLocalPeerId();
-            if (localPeerId != null) {
-                Message errorMessage = messageService.createFileTransferErrorMessage(localPeerId, senderId, fileId, "Unexpected error on recipient processing chunk: " + e.getMessage());
+            String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
+            if (localUserId != null) {
+                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "Unexpected error on recipient processing chunk: " + e.getMessage());
                 p2pConnectionManager.sendMessage(senderId, errorMessage);
             }
         }
