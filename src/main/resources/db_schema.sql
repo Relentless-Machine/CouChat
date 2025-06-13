@@ -94,7 +94,7 @@ CREATE TABLE conversations (
     is_pinned BOOLEAN DEFAULT 0,          -- For pinning conversations to the top
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, -- When the conversation was initiated
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, -- Timestamp of the last activity (new message, read, etc.)
-    FOREIGN KEY (last_message_id) REFERENCES messages(message_id)
+    FOREIGN KEY (last_message_id) REFERENCES messages(message_id) ON DELETE SET NULL
     -- Note: target_peer_id could reference users(user_id) or groups(group_id)
     -- but SQLite doesn't enforce polymorphic associations directly with FOREIGN KEY.
     -- This link will be maintained by application logic.
