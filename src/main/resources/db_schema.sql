@@ -12,9 +12,9 @@ CREATE TABLE messages (
     original_message_id TEXT,             -- For replies, references messages.message_id
     status TEXT DEFAULT 'PENDING',        -- PENDING, SENT, DELIVERED, READ, FAILED
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id),
-    FOREIGN KEY (original_message_id) REFERENCES messages(message_id),
-    FOREIGN KEY (sender_id) REFERENCES users(user_id)
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE, -- Added ON DELETE CASCADE
+    FOREIGN KEY (original_message_id) REFERENCES messages(message_id) ON DELETE SET NULL, -- Assuming original_message_id can be nulled if original is deleted
+    FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE -- If user is deleted, their messages are deleted
 );
 
 -- Stores user information
