@@ -194,6 +194,15 @@ public class DeviceDiscoveryService {
         return localPeerId;
     }
 
+    /**
+     * Gets the port on which the main P2P service (e.g., P2PConnectionManager) is, or will be, listening.
+     *
+     * @return The local service port.
+     */
+    public int getLocalServicePort() {
+        return localServicePort;
+    }
+
     @PreDestroy
     public void shutdown() {
         logger.info("Shutting down DeviceDiscoveryService...");

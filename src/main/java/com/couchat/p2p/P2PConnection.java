@@ -1,20 +1,23 @@
 package com.couchat.p2p;
 
-import com.couchat.messaging.MessageService; // Placeholder
-import com.couchat.security.EncryptionService; // Placeholder
+import com.couchat.messaging.MessageService;
+import com.couchat.security.EncryptionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64; // Import for Base64 encoding/decoding
 
 /**
  * Represents and manages an active P2P connection with a remote peer.
  * This class handles sending and receiving messages over a socket, integrating
- * with encryption and message processing services.
+ * with encryption and message processing services once a secure session is established.
  * It is designed to be run in its own thread for listening to incoming messages.
  */
 public class P2PConnection implements Runnable {
@@ -26,13 +29,22 @@ public class P2PConnection implements Runnable {
     private final InputStream inputStream;
     private final OutputStream outputStream;
     private final P2PConnectionManager connectionManager;
-    private final EncryptionService encryptionService; // To be integrated
-    private final MessageService messageService; // To be integrated
+    private final EncryptionService encryptionService; // For actual encryption/decryption
+    private final MessageService messageService;     // For processing decrypted messages
     private volatile boolean running = true;
     private final String localPeerId;
 
+    // Session-specific security parameters
+    private SecretKey sessionAesKey;            // AES key for this session
+    private boolean handshakeComplete = false;    // True if key exchange and handshake are done
+    // remoteRsaPublicKey might be used by manager during handshake, not necessarily stored here long-term
+    // unless needed for re-keying or other specific operations within P2PConnection itself.
+
     /**
      * Constructs a new P2PConnection.
+     * This constructor is called after the initial socket connection is made but before
+     * the full secure handshake (including key exchange) is necessarily complete.
+     * The sessionAesKey and handshakeComplete status will be updated by the P2PConnectionManager.
      *
      * @param localPeerId The ID of the local peer.
      * @param peerId The ID of the remote peer.
@@ -50,9 +62,38 @@ public class P2PConnection implements Runnable {
         this.inputStream = socket.getInputStream();
         this.outputStream = socket.getOutputStream();
         this.connectionManager = connectionManager;
-        this.encryptionService = encryptionService; // Assign injected service
-        this.messageService = messageService;   // Assign injected service
-        logger.info("P2PConnection created for peer: {} with local ID: {}", peerId, localPeerId);
+        this.encryptionService = encryptionService;
+        this.messageService = messageService;
+        logger.info("P2PConnection instance created for peer: {} with local ID: {}. Waiting for handshake.", peerId, localPeerId);
+    }
+
+    /**
+     * Sets the AES session key for this connection.
+     * This is typically called by {@link P2PConnectionManager} after successful key exchange.
+     *
+     * @param sessionAesKey The negotiated AES key for encrypting/decrypting messages.
+     */
+    public void setSessionAesKey(SecretKey sessionAesKey) {
+        this.sessionAesKey = sessionAesKey;
+        logger.debug("Session AES key set for peer: {}", peerId);
+    }
+
+    /**
+     * Marks the handshake (including key exchange) as complete for this connection.
+     * This is typically called by {@link P2PConnectionManager}.
+     */
+    public void setHandshakeComplete() {
+        this.handshakeComplete = true;
+        logger.info("Handshake complete for peer: {}. Secure communication enabled.", peerId);
+    }
+
+    /**
+     * Checks if the secure handshake and key exchange process is complete.
+     *
+     * @return true if the handshake is complete, false otherwise.
+     */
+    public boolean isHandshakeComplete() {
+        return handshakeComplete;
     }
 
     /**
@@ -67,33 +108,38 @@ public class P2PConnection implements Runnable {
     @Override
     public void run() {
         try {
-            // Optional: Initial handshake if not already done by P2PConnectionManager
-            // For example, send local peerId and verify remote peerId
-            // outputStream.write(localPeerId.getBytes());
-            // byte[] handshakeBuffer = new byte[1024];
-            // int bytesReadHandshake = inputStream.read(handshakeBuffer);
-            // String receivedPeerId = new String(handshakeBuffer, 0, bytesReadHandshake).trim();
-            // if (!peerId.equals(receivedPeerId)) {
-            //     logger.warn("Handshake failed: Expected peerId {} but received {}. Closing connection.", peerId, receivedPeerId);
-            //     close();
-            //     return;
-            // }
-            // logger.info("Handshake successful with peer: {}", peerId);
-
             byte[] buffer = new byte[4096]; // Buffer for incoming messages
             int bytesRead;
 
             while (running && !socket.isClosed() && (bytesRead = inputStream.read(buffer)) != -1) {
-                String rawMessage = new String(buffer, 0, bytesRead);
-                logger.debug("Received raw data from {}: {}", peerId, rawMessage);
+                if (!handshakeComplete) {
+                    // This path should ideally not be hit if P2PConnectionManager handles all pre-handshake messages.
+                    // However, as a safeguard or if P2PConnection is started before full handshake signal:
+                    logger.warn("Received data from peer {} before handshake completion. Ignoring.", peerId);
+                    // Or, pass to a specific pre-handshake handler if P2PConnection is involved in handshake steps.
+                    // For now, we assume P2PConnectionManager handles handshake messages on its own thread.
+                    continue;
+                }
 
-                // TODO: Decrypt message using encryptionService
-                // String decryptedMessage = encryptionService.decrypt(rawMessage, peerId); // Or session key
-                String decryptedMessage = rawMessage; // Placeholder
+                String rawEncryptedMessageB64 = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+                logger.debug("Received raw encrypted data ({} bytes) from {}: {}", bytesRead, peerId, rawEncryptedMessageB64.length() > 100 ? rawEncryptedMessageB64.substring(0,100) + "..." : rawEncryptedMessageB64);
 
-                // TODO: Pass to MessageService for processing
-                // messageService.processIncomingMessage(peerId, decryptedMessage);
-                logger.info("Received (decrypted) message from {}: {}", peerId, decryptedMessage); // Placeholder
+                if (sessionAesKey == null) {
+                    logger.error("Handshake complete but session AES key is null for peer {}. Cannot decrypt. Closing connection.", peerId);
+                    close();
+                    return;
+                }
+
+                byte[] decryptedMessageBytes = encryptionService.decryptWithAesKey(rawEncryptedMessageB64, sessionAesKey);
+
+                if (decryptedMessageBytes != null) {
+                    String decryptedMessage = new String(decryptedMessageBytes, StandardCharsets.UTF_8);
+                    logger.info("Decrypted message from {}: {}", peerId, decryptedMessage.length() > 100 ? decryptedMessage.substring(0,100) + "..." : decryptedMessage);
+                    messageService.processIncomingMessage(peerId, decryptedMessage); // Process the decrypted message
+                } else {
+                    logger.warn("Failed to decrypt message from peer {}. Potentially corrupted or invalid key.", peerId);
+                    // Consider policies for handling decryption failures (e.g., terminate connection after N failures)
+                }
             }
         } catch (SocketException se) {
             if (running) { // Log error only if the connection was supposed to be active
@@ -114,7 +160,8 @@ public class P2PConnection implements Runnable {
 
     /**
      * Sends a message to the connected peer.
-     * The message will be encrypted before sending (TODO).
+     * If the handshake is complete and a session key is available, the message will be encrypted.
+     * Otherwise, a warning is logged, and the message is not sent.
      *
      * @param message The plain text message to send.
      */
@@ -123,15 +170,27 @@ public class P2PConnection implements Runnable {
             logger.warn("Cannot send message to {}: Connection is not active.", peerId);
             return;
         }
-        try {
-            logger.debug("Sending message to {}: {}", peerId, message);
-            // TODO: Encrypt message using encryptionService
-            // String encryptedMessage = encryptionService.encrypt(message, peerId); // Or session key
-            String encryptedMessage = message; // Placeholder
 
-            outputStream.write(encryptedMessage.getBytes());
-            outputStream.flush();
-            logger.info("Sent message to {}: {}", peerId, message.length() > 50 ? message.substring(0, 50) + "..." : message);
+        if (!handshakeComplete || sessionAesKey == null) {
+            logger.warn("Cannot send message to {}: Handshake not complete or session key not available.", peerId);
+            return;
+        }
+
+        try {
+            logger.debug("Attempting to encrypt and send message to {}: {}", peerId, message.length() > 50 ? message.substring(0, 50) + "..." : message);
+
+            // Encrypt the message using the session AES key
+            // encryptWithAesKey returns a Base64 encoded string directly
+            String encryptedMessageB64 = encryptionService.encryptWithAesKey(message.getBytes(StandardCharsets.UTF_8), sessionAesKey);
+
+            if (encryptedMessageB64 != null) {
+                // Send the Base64 encoded encrypted message as bytes
+                outputStream.write(encryptedMessageB64.getBytes(StandardCharsets.UTF_8));
+                outputStream.flush();
+                logger.info("Sent encrypted message ({} bytes) to {}", encryptedMessageB64.length(), peerId);
+            } else {
+                logger.error("Failed to encrypt message for peer {}. Message not sent.", peerId);
+            }
         } catch (IOException e) {
             logger.error("Failed to send message to peer {}: {}", peerId, e.getMessage(), e);
             // Consider closing the connection if a send error occurs, as it might be unrecoverable
@@ -194,13 +253,11 @@ public class P2PConnection implements Runnable {
          * Constructs a Placeholder connection.
          *
          * @param peerId The ID of the peer for which this placeholder is created.
+         * @throws IOException if the super constructor throws it (though unlikely with null socket).
          */
         public Placeholder(String peerId) throws IOException {
-            super(null, peerId, null, null, null, null); // Super constructor needs to be called
+            super(null, peerId, null, null, null, null);
             this.placeholderPeerId = peerId;
-            // Note: The super call will try to use null socket, IS, OS. This is not ideal.
-            // A better design might be a common interface or a different map for placeholders.
-            // For now, this works because methods like isActive, sendMessage, close are overridden.
             logger.debug("P2PConnection.Placeholder created for peer: {}", peerId);
         }
 
