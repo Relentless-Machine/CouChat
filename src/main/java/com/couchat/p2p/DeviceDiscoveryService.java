@@ -258,8 +258,8 @@ public class DeviceDiscoveryService {
         @Override
         public String toString() {
             return "DiscoveredPeer{" +
-                    "peerId='" + peerId + ''' +
-                    ", ipAddress='" + ipAddress + ''' +
+                    "peerId='" + peerId + '\'' +
+                    ", ipAddress='" + ipAddress + '\'' +
                     ", servicePort=" + servicePort +
                     ", lastSeen=" + lastSeen +
                     '}';
@@ -279,4 +279,3 @@ public class DeviceDiscoveryService {
         }
     }
 }
-
