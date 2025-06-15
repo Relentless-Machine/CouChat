@@ -1,6 +1,6 @@
 // src/services/MessageService.ts
 
-const API_BASE_URL = 'http://localhost:8080/api/messages'; // Assuming backend runs on port 8080
+const API_BASE_URL = 'http://localhost:8121/api/messages'; // Assuming backend runs on port 8121
 
 interface EncryptedResponse {
   encryptedText: string;
@@ -80,4 +80,3 @@ export const decryptMessageAPI = async (encryptedText: string): Promise<string> 
     throw new Error('An unexpected error occurred during decryption.');
   }
 };
-

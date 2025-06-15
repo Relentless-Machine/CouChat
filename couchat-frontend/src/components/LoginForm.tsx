@@ -1,80 +1,85 @@
 // LoginForm.tsx
-import React, { useState, ChangeEvent, FormEvent } from 'react';
+import React, { useState, FormEvent } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { login as loginService } from '../services/AuthService';
-import { useAuth } from '../contexts/AuthContext'; // Import useAuth
 
 const LoginForm: React.FC = () => {
+  const [username, setUsername] = useState('');
+  const [deviceName, setDeviceName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRegisterMode, setIsRegisterMode] = useState(true); // Default to register mode
+
+  const { login, register } = useAuth();
   const navigate = useNavigate();
-  const { login: contextLogin } = useAuth(); // Get login function from AuthContext
-  const [username, setUsername] = useState<string>('');
-  const [password, setPassword] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(false); // For loading state
-  const [loginMessage, setLoginMessage] = useState<string>(''); // For displaying login messages
 
-  const handleUsernameChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setUsername(event.target.value);
-  };
-
-  const handlePasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setPassword(event.target.value);
-  };
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    setIsLoading(true);
-    setLoginMessage(''); // Clear previous messages
-    console.log('LoginForm: Attempting login with:', username);
+    setIsSubmitting(true);
+    setError(null);
 
     try {
-      const response = await loginService(username, password);
-      if (response.success && response.token) { // Check for token as well
-        console.log('LoginForm: Login successful via service!', response);
-        contextLogin(response.token); // Call context login with the token
-        // Clear fields on successful login
-        setUsername('');
-        setPassword('');
-        navigate('/chat'); // Navigate to chat page on success
+      if (isRegisterMode) {
+        await register({ username, deviceName: deviceName || undefined });
+        console.log('LoginForm: Registration successful');
+        // Optionally, automatically log in or navigate to a page indicating successful registration
+        // For now, we will navigate to chat, assuming registration also logs the user in.
       } else {
-        console.warn('LoginForm: Login failed via service.', response);
-        setLoginMessage(`Login failed: ${response.message}`);
+        await login({ username, deviceName: deviceName || undefined });
+        console.log('LoginForm: Login successful');
       }
-    } catch (error) {
-      console.error('LoginForm: An error occurred during login:', error);
-      setLoginMessage('An error occurred. Please try again.');
+      navigate('/chat'); // Navigate to chat page on successful login/registration
+    } catch (err: any) {
+      const errorMessage = err.message || 'An unexpected error occurred.';
+      console.error(isRegisterMode ? 'Registration attempt failed:' : 'Login attempt failed:', errorMessage, err);
+      setError(errorMessage);
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px', width: '300px', margin: 'auto' }}>
+      <h2>{isRegisterMode ? 'Register New User' : 'Login'}</h2>
       <div>
-        <label htmlFor="username">Username:</label>
+        <label htmlFor="username" style={{ display: 'block', marginBottom: '5px' }}>Username:</label>
         <input
           type="text"
           id="username"
-          name="username"
           value={username}
-          onChange={handleUsernameChange}
+          onChange={(e) => setUsername(e.target.value)}
           required
+          disabled={isSubmitting}
+          style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
         />
       </div>
       <div>
-        <label htmlFor="password">Password:</label>
+        <label htmlFor="deviceName" style={{ display: 'block', marginBottom: '5px' }}>Device Name (Optional):</label>
         <input
-          type="password"
-          id="password"
-          name="password"
-          value={password}
-          onChange={handlePasswordChange}
-          required
+          type="text"
+          id="deviceName"
+          value={deviceName}
+          placeholder="e.g., My Laptop, Work PC"
+          onChange={(e) => setDeviceName(e.target.value)}
+          disabled={isSubmitting}
+          style={{ width: '100%', padding: '8px', boxSizing: 'border-box' }}
         />
       </div>
-      <button type="submit" disabled={isLoading}>
-        {isLoading ? 'Logging in...' : 'Login'}
+      {error && <p style={{ color: 'red', textAlign: 'center' }}>{error}</p>}
+      <button type="submit" disabled={isSubmitting} style={{ padding: '10px', cursor: 'pointer' }}>
+        {isSubmitting ? 'Processing...' : (isRegisterMode ? 'Register' : 'Login')}
       </button>
-      {loginMessage && <p>{loginMessage}</p>}
+      <button
+        type="button"
+        onClick={() => {
+          setIsRegisterMode(!isRegisterMode);
+          setError(null); // Clear error when switching modes
+        }}
+        disabled={isSubmitting}
+        style={{ padding: '10px', cursor: 'pointer', backgroundColor: 'grey', color: 'white', border: 'none' }}
+      >
+        {isRegisterMode ? 'Already have an account? Login' : 'Need an account? Register'}
+      </button>
     </form>
   );
 };
