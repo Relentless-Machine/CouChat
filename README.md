@@ -23,20 +23,21 @@ CouChat is an encrypted peer-to-peer (P2P) communication software designed with 
 - **Build Tool**: Maven
 - **Version Control**: Git
 - **Code Repository**: GitHub
-- **Testing**: JUnit 5, Mockito
+- **Testing**: JUnit 5, Mockito, Spring Security Test
 - **CI/CD**: Jenkins (planned)
 
 ## Current Development Status
 
-As of June 14, 2025:
+As of June 15, 2025:
 
 *   The project is actively developing a **second prototype** focusing on core P2P functionality within a Local Area Network (LAN).
-*   Key goals for this prototype include:
-    *   LAN-based device discovery.
-    *   End-to-end encrypted text and file messaging between two peers.
-    *   Device Passkey based authentication (as a stand-in for full OAuth initially).
+*   Backend tests for key features of this prototype, including LAN-based device discovery, end-to-end encrypted text/file messaging, and Passkey-based authentication, are now **passing**.
+*   Key goals for this prototype remain:
+    *   Robust LAN-based device discovery and stable P2P connections.
+    *   Fully functional end-to-end encrypted text and file messaging between two peers.
+    *   Device Passkey based authentication.
     *   Integration of the Java backend and React/Electron frontend into a single distributable package.
-*   The `dev` branch is the main line for this ongoing development, incorporating learnings from previous prototypes.
+*   The `dev` branch is the main line for this ongoing development, incorporating recent work on database integration, Passkey authentication, and extensive test corrections.
 *   A v0.1.0 frontend prototype (demonstrating UI flows) is available on the `release/v0.1.0-prototype` branch for historical reference.
 
 ## Modules (Backend - Key Services)
@@ -45,52 +46,70 @@ As of June 14, 2025:
 2.  **`com.couchat.security.EncryptionService`**: Handles cryptographic operations, including RSA key pair management for identity and key exchange, AES session key generation, and end-to-end encryption/decryption of messages and files.
 3.  **`com.couchat.p2p.DeviceDiscoveryService`**: Responsible for discovering other CouChat clients on the local network using multicast/broadcast.
 4.  **`com.couchat.p2p.P2PConnectionManager`**: Manages the lifecycle of P2P connections with peers, including the secure handshake process (key exchange) and session establishment.
-5.  **`com.couchat.messaging.MessageService`**: Handles the creation, processing (serialization/deserialization), and routing of different message types (text, file info, etc.).
+5.  **`com.couchat.messaging.service.MessageService`**: Handles the creation, processing (serialization/deserialization), and routing of different message types (text, file info, etc.). Interacts with repositories for message persistence.
 6.  **`com.couchat.transfer.FileTransferService`**: Manages the mechanics of file transfers, including initiating transfers, chunking files, sending/receiving chunks, and tracking transfer status.
-7.  **Repository Layer (`com.couchat.repository.*`)**: Provides data persistence for users, messages, conversations, etc., primarily using a local SQLite database.
+7.  **Repository Layer (`com.couchat.repository.*`)**: Provides data persistence for users (including Passkeys), messages, conversations, etc., primarily using a local SQLite database.
 
 ## Getting Started
 
-(To be updated with build and run instructions)
+(To be updated with build and run instructions for the integrated prototype)
 
 ## Project Structure
 
 ```
 couchat/
-├── pom.xml                # Maven project configuration for backend
-├── README.md              # This file
-├── couchat_storage.db     # Local SQLite database file (gitignored typically)
-├── couchat-frontend/      # React/Electron frontend application
-│   ├── package.json
-│   ├── electron-main.cjs
-│   ├── vite.config.ts
-│   └── src/
-│       ├── main.tsx
-│       └── App.tsx
-└── src/                   # Java backend source
+├── pom.xml                     # Maven project configuration for backend
+├── README.md                   # This file
+├── couchat_storage.db          # Local SQLite database file (gitignored)
+├── couchat-frontend/           # React/Electron frontend application
+│   ├── package.json            # Frontend dependencies and scripts
+│   ├── electron-main.cjs       # Electron main process
+│   ├── electron-preload.cjs    # Electron preload script
+│   ├── vite.config.ts          # Vite configuration for frontend build
+│   ├── tsconfig.json           # Base TypeScript configuration for frontend
+│   ├── index.html              # Main HTML for Electron renderer
+│   ├── ...                     # Other frontend config files (ESLint, specific tsconfigs)
+│   ├── public/                 # Static assets for frontend
+│   └── src/                    # Frontend source code (React)
+│       ├── main.tsx            # React application entry point
+│       ├── App.tsx             # Root React component
+│       ├── assets/             # Frontend assets (images, svgs)
+│       ├── components/         # Reusable React components (e.g., LoginForm)
+│       ├── contexts/           # React contexts (e.g., AuthContext)
+│       ├── pages/              # Page-level components (e.g., ChatPage, LoginPage)
+│       └── services/           # Frontend services (e.g., AuthService, MessageService)
+└── src/                        # Java backend source
     ├── main/
     │   ├── java/
     │   │   └── com/
     │   │       └── couchat/
-    │   │           ├── CouChatApplication.java
-    │   │           ├── auth/              # Authentication (PasskeyAuthService)
-    │   │           ├── conversation/      # Conversation management (future)
-    │   │           ├── device/            # Device related services (future)
-    │   │           ├── group/             # Group chat (future)
-    │   │           ├── messaging/         # Message models, services, controllers
-    │   │           ├── p2p/               # P2P discovery and connection management
-    │   │           ├── repository/        # Data persistence interfaces and implementations
-    │   │           ├── security/          # Encryption services
-    │   │           ├── transfer/          # File transfer services and controllers
-    │   │           └── user/              # User management (future)
-    │   │           └── web/               # Web DTOs and some controllers
-    │   └── resources/
-    │       ├── application.properties
-    │       └── db_schema.sql
-    └── test/
+    │   │           ├── CouChatApplication.java # Spring Boot main application class
+    │   │           ├── api/                # DTOs for general API responses/requests (under api/dto)
+    │   │           ├── auth/               # Authentication (Passkey services, DTOs)
+    │   │           ├── config/             # Spring Boot configurations (Security, Web)
+    │   │           ├── conversation/       # Conversation related (controllers, models, services)
+    │   │           ├── device/             # Device related (models, services)
+    │   │           ├── group/              # Group chat related (controllers, models, services)
+    │   │           ├── messaging/          # Core messaging (models, services)
+    │   │           ├── p2p/                # Peer-to-peer connection management and discovery
+    │   │           ├── repository/         # Data persistence (interfaces and JDBC implementations)
+    │   │           ├── security/           # Cryptographic services
+    │   │           ├── transfer/           # File transfer (controllers, models, services)
+    │   │           ├── user/               # User management (controllers, models, services)
+    │   │           └── web/                # Web layer specific (controllers, DTOs for web interaction)
+    │   └── resources/              # Backend resources
+    │       ├── application.properties # Spring Boot application properties
+    │       ├── db_schema.sql      # SQLite database schema definition
+    │       └── logback.xml        # Logging configuration
+    └── test/                       # Backend tests
         └── java/
             └── com/
-                └── couchat/ # Unit and integration tests
+                └── couchat/        # Test packages mirroring main structure
+                    ├── auth/
+                    ├── group/
+                    ├── p2p/
+                    ├── security/
+                    └── web/controller/ # Note: web/controller is the specific path for MessageControllerTest
 ```
 
 ## Design Documents
@@ -100,18 +119,20 @@ couchat/
 
 ## Next Steps
 
-- **Backend**:
-    - Solidify LAN device discovery and P2P connection stability.
-    - Complete and rigorously test end-to-end encrypted text and file transfer.
-    - Ensure robust Passkey authentication and session management.
-    - Integrate database operations for storing messages and user Passkey information.
-- **Frontend**:
-    - Develop React components for user discovery, chat interface (text & file), and Passkey login.
-    - Integrate frontend with backend APIs via Electron's IPC or local HTTP requests.
+With backend core P2P and messaging tests passing:
+
+- **Frontend Development**: 
+    - Implement UI for LAN user discovery and initiating chats.
+    - Develop the main chat interface for sending/receiving encrypted text and files.
+    - Integrate Passkey generation and login UI flows.
+    - Connect React components to backend APIs via Electron's IPC or local HTTP requests.
+- **Backend Refinement (As Needed)**:
+    - Further stabilize P2P connections based on integration testing.
+    - Optimize file transfer for larger files if necessary.
 - **Integration & Packaging**:
-    - Package the Java backend and React/Electron frontend into a single distributable application.
-- **Testing**:
-    - Conduct thorough end-to-end testing of the integrated prototype on a LAN.
+    - Package the Java backend (Spring Boot JAR) and React/Electron frontend into a single distributable application.
+- **End-to-End Testing**:
+    - Conduct thorough end-to-end testing of the integrated prototype on a LAN, covering all core features of the second prototype.
 
 ## Contribution
 
