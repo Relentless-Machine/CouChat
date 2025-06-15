@@ -461,28 +461,83 @@ public class FileTransferService {
      * @param errorCode An optional error code.
      * @param errorMessageText The error message.
      */
-    public void handleFileTransferErrorMessage(String fileId, String senderId, String errorCode, String errorMessageText) {
-        logger.warn("Received FILE_TRANSFER_ERROR for file ID: {} from {}. Code: [{}], Message: '{}'",
-                    fileId, senderId, errorCode, errorMessageText);
+    public void handleFileTransferErrorMessage(String fileId, String senderOfError, String errorCode, String errorMessageText) {
+        logger.error("Received FILE_TRANSFER_ERROR from peer {}: File ID: {}, Code: {}, Message: {}",
+                     senderOfError, fileId, errorCode, errorMessageText);
 
-        OutgoingFileTransfer outgoing = outgoingTransfers.get(fileId);
-        if (outgoing != null && outgoing.getRecipientId().equals(senderId)) {
-            if (outgoing.getStatus() != FileTransferStatus.FAILED) {
-                outgoing.setStatus(FileTransferStatus.FAILED);
-                logger.info("Marked outgoing file transfer ID: {} as FAILED due to error from recipient.", fileId);
-                // Stop sending chunks if in progress (the check in startSendingChunks should handle this)
-            }
-        } else {
-            IncomingFileTransfer incoming = incomingTransfers.get(fileId);
-            if (incoming != null && incoming.getSenderId().equals(senderId)) {
-                if (incoming.getStatus() != FileTransferStatus.FAILED) {
-                    incoming.setStatus(FileTransferStatus.FAILED);
-                    logger.info("Marked incoming file transfer ID: {} as FAILED due to error from sender.", fileId);
-                    incoming.closeAndCleanupFile(); // Clean up partial file
+        // Check if it's for an outgoing transfer we initiated
+        OutgoingFileTransfer outgoingTransfer = outgoingTransfers.get(fileId);
+        if (outgoingTransfer != null && outgoingTransfer.getRecipientId().equals(senderOfError)) {
+            logger.error("Outgoing file transfer {} to {} failed. Reason from peer: {} - {}",
+                         fileId, senderOfError, errorCode, errorMessageText);
+            outgoingTransfer.setStatus(FileTransferStatus.FAILED);
+            // TODO: Notify UI about the failure of the outgoing transfer
+            // outgoingTransfers.remove(fileId); // Or keep for history/retry
+            return;
+        }
+
+        // Check if it's for an incoming transfer we are receiving
+        IncomingFileTransfer incomingTransfer = incomingTransfers.get(fileId);
+        if (incomingTransfer != null && incomingTransfer.getSenderId().equals(senderOfError)) {
+            logger.error("Incoming file transfer {} from {} failed. Reason from peer: {} - {}",
+                         fileId, senderOfError, errorCode, errorMessageText);
+            incomingTransfer.setStatus(FileTransferStatus.FAILED);
+            // TODO: Notify UI about the failure of the incoming transfer
+            // incomingTransfers.remove(fileId); // Or keep for history/retry
+            return;
+        }
+
+        logger.warn("Received a FILE_TRANSFER_ERROR for an unknown or mismatched transfer. File ID: {}, Sender of Error: {}",
+                    fileId, senderOfError);
+    }
+
+    public void handleFileTransferCompletedBySender(String fileId, String senderId) {
+        IncomingFileTransfer transfer = incomingTransfers.get(fileId);
+        if (transfer == null) {
+            logger.warn("Received FILE_TRANSFER_COMPLETE for unknown or non-active incoming file ID: {} from sender: {}", fileId, senderId);
+            return;
+        }
+
+        if (!transfer.getSenderId().equals(senderId)) {
+            logger.warn("Received FILE_TRANSFER_COMPLETE from unexpected sender {} for file ID: {}. Expected: {}",
+                        senderId, fileId, transfer.getSenderId());
+            return;
+        }
+
+        // This message means the sender has sent all chunks.
+        // The receiver (this instance) should verify if all chunks were indeed received.
+        logger.info("Sender {} reported FILE_TRANSFER_COMPLETE for file ID: {}. Verifying received chunks.", senderId, fileId);
+
+        if (transfer.getStatus() == FileTransferStatus.RECEIVING_CHUNKS || transfer.getStatus() == FileTransferStatus.AWAITING_CHUNKS) {
+            // Check if all chunks are received
+            if (transfer.areAllChunksReceived()) {
+                try {
+                    transfer.assembleFile(); // This method now also sets status to COMPLETED
+                    logger.info("Successfully assembled file ID: {} from sender: {}. Path: {}",
+                                fileId, senderId, transfer.getFinalFilePath());
+                    // Optionally, send a final acknowledgment to the sender, though not strictly required by current flow
+                } catch (IOException e) {
+                    logger.error("Failed to assemble file ID: {} from sender: {}. Error: {}", fileId, senderId, e.getMessage(), e);
+                    transfer.setStatus(FileTransferStatus.FAILED);
+                    // Inform sender about the failure to assemble
+                    Message errorMessage = messageService.createFileTransferErrorMessage(
+                        passkeyAuthService.getLocalUserId(), // local user is sending the error
+                        senderId, // recipient of error is the original sender
+                        fileId,
+                        "ASSEMBLY_FAILED",
+                        "Receiver failed to assemble file: " + e.getMessage()
+                    );
+                    p2pConnectionManager.sendMessage(senderId, errorMessage);
                 }
             } else {
-                logger.warn("Received FILE_TRANSFER_ERROR for file ID: {} from {}, but no matching active transfer found or sender mismatch.", fileId, senderId);
+                logger.warn("Sender {} reported FILE_TRANSFER_COMPLETE for file ID: {}, but not all chunks have been received locally. Expected: {}, Got: {}. Waiting for more chunks or timeout.",
+                            senderId, fileId, transfer.getFileInfo().getTotalChunks(), transfer.getChunksReceivedCount());
+                // Do not change status yet, wait for more chunks or a timeout mechanism to declare it failed.
+                // The sender might have sent COMPLETE, but chunks might still be in transit or lost.
             }
+        } else {
+            logger.warn("Received FILE_TRANSFER_COMPLETE for file ID: {} from sender: {} but current status is {}. No action taken.",
+                        fileId, senderId, transfer.getStatus());
         }
     }
 

@@ -1,8 +1,14 @@
 package com.couchat.p2p;
 
-import com.couchat.messaging.MessageService;
-import com.couchat.messaging.model.Message; // Import Message class
+import com.couchat.messaging.model.Message;
+import com.couchat.messaging.model.FileChunk;
+import com.couchat.messaging.model.FileInfo;
 import com.couchat.security.EncryptionService;
+import com.couchat.messaging.service.MessageService;
+import com.couchat.transfer.FileTransferService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,7 +19,7 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import java.util.Map;
 
 /**
  * Represents and manages an active P2P connection with a remote peer.
@@ -30,8 +36,10 @@ public class P2PConnection implements Runnable {
     private final InputStream inputStream;
     private final OutputStream outputStream;
     private final P2PConnectionManager connectionManager;
-    private final EncryptionService encryptionService; // For actual encryption/decryption
-    private final MessageService messageService;     // For processing decrypted messages
+    private final EncryptionService encryptionService;
+    private final MessageService messageService;
+    private final FileTransferService fileTransferService;
+    private final ObjectMapper objectMapper;
     private volatile boolean running = true;
     private final String localPeerId;
 
@@ -51,10 +59,12 @@ public class P2PConnection implements Runnable {
      * @param connectionManager The manager responsible for P2P connections.
      * @param encryptionService The service for message encryption/decryption.
      * @param messageService The service for processing incoming messages.
+     * @param fileTransferService The service for handling file transfers.
      * @throws IOException if an I/O error occurs when creating input/output streams.
      */
     public P2PConnection(String localPeerId, String peerId, Socket socket, P2PConnectionManager connectionManager,
-                         EncryptionService encryptionService, MessageService messageService) throws IOException {
+                         EncryptionService encryptionService, MessageService messageService,
+                         FileTransferService fileTransferService) throws IOException {
         this.localPeerId = localPeerId;
         this.peerId = peerId;
         this.socket = socket;
@@ -63,6 +73,10 @@ public class P2PConnection implements Runnable {
         this.connectionManager = connectionManager;
         this.encryptionService = encryptionService;
         this.messageService = messageService;
+        this.fileTransferService = fileTransferService;
+
+        this.objectMapper = new ObjectMapper();
+        this.objectMapper.registerModule(new JavaTimeModule());
         logger.info("P2PConnection instance created for peer: {} with local ID: {}. Waiting for handshake.", peerId, localPeerId);
     }
 
@@ -130,7 +144,88 @@ public class P2PConnection implements Runnable {
                 if (decryptedMessageBytes != null) {
                     String decryptedJsonMessage = new String(decryptedMessageBytes, StandardCharsets.UTF_8);
                     logger.info("Decrypted JSON message from {}: {}", peerId, decryptedJsonMessage.length() > 100 ? decryptedJsonMessage.substring(0,100) + "..." : decryptedJsonMessage);
-                    messageService.processIncomingMessage(peerId, decryptedJsonMessage); // Process the decrypted JSON message
+
+                    // --- Start of new message processing logic ---
+                    try {
+                        Message message = objectMapper.readValue(decryptedJsonMessage, Message.class);
+                        logger.info("Processing message from peer {}: Type: {}, ID: {}, Timestamp: {}",
+                                    peerId, message.getType(), message.getMessageId(), message.getTimestamp());
+
+                        switch (message.getType()) {
+                            case TEXT:
+                                messageService.receiveTextMessage(message); // New method in new MessageService
+                                break;
+                            case READ_RECEIPT:
+                                messageService.processReadReceipt(message); // New method in new MessageService
+                                break;
+                            case FILE_INFO:
+                                FileInfo fileInfo = objectMapper.convertValue(message.getPayload(), FileInfo.class);
+                                fileTransferService.handleIncomingFileInfo(fileInfo, message.getSenderId());
+                                break;
+                            case FILE_CHUNK:
+                                FileChunk fileChunk = objectMapper.convertValue(message.getPayload(), FileChunk.class);
+                                fileTransferService.handleIncomingFileChunk(fileChunk, message.getSenderId());
+                                break;
+                            case FILE_TRANSFER_ACCEPTED:
+                                if (message.getPayload() instanceof String) {
+                                    String acceptedFileId = (String) message.getPayload();
+                                    fileTransferService.handleFileTransferAccepted(acceptedFileId, message.getSenderId());
+                                } else {
+                                     logger.warn("Received FILE_TRANSFER_ACCEPTED with invalid payload type from peer {}. Payload: {}", peerId, message.getPayload());
+                                }
+                                break;
+                            case FILE_TRANSFER_REJECTED:
+                                if (message.getPayload() instanceof String) {
+                                    String rejectedFileId = (String) message.getPayload();
+                                    // Using existing method in FileTransferService, assuming it logs and updates status
+                                    fileTransferService.handleFileTransferErrorMessage(rejectedFileId, message.getSenderId(), "REJECTED", "Transfer rejected by peer");
+                                } else {
+                                     logger.warn("Received FILE_TRANSFER_REJECTED with invalid payload type from peer {}. Payload: {}", peerId, message.getPayload());
+                                }
+                                break;
+                            case FILE_TRANSFER_CANCELLED:
+                                 if (message.getPayload() instanceof String) {
+                                    String cancelledFileId = (String) message.getPayload();
+                                    fileTransferService.handleFileTransferErrorMessage(cancelledFileId, message.getSenderId(), "CANCELLED", "Transfer cancelled by peer");
+                                } else {
+                                     logger.warn("Received FILE_TRANSFER_CANCELLED with invalid payload type from peer {}. Payload: {}", peerId, message.getPayload());
+                                }
+                                break;
+                            case FILE_TRANSFER_COMPLETE: // Sender informs receiver that all chunks are sent
+                                if (message.getPayload() instanceof String) {
+                                    String completedFileId = (String) message.getPayload();
+                                    fileTransferService.handleFileTransferCompletedBySender(completedFileId, message.getSenderId());
+                                } else {
+                                     logger.warn("Received FILE_TRANSFER_COMPLETE with invalid payload type from peer {}. Payload: {}", peerId, message.getPayload());
+                                }
+                                break;
+                            case FILE_TRANSFER_ERROR: // Peer informs of an error in transfer
+                                if (message.getPayload() instanceof Map) {
+                                    try {
+                                        @SuppressWarnings("unchecked")
+                                        Map<String, String> errorPayload = (Map<String, String>) message.getPayload();
+                                        String errorFileId = errorPayload.get("fileId");
+                                        String errorCode = errorPayload.get("errorCode"); // e.g., "CHUNK_MISSING", "IO_ERROR_ON_RECEIVE"
+                                        String errorMessageText = errorPayload.get("errorMessage");
+                                        fileTransferService.handleFileTransferErrorMessage(errorFileId, message.getSenderId(), errorCode, errorMessageText);
+                                    } catch (Exception e) {
+                                        logger.error("Error processing FILE_TRANSFER_ERROR payload from peer {}: {}", peerId, message.getPayload(), e);
+                                    }
+                                } else {
+                                    logger.warn("Received FILE_TRANSFER_ERROR with invalid payload type from peer {}. Payload: {}", peerId, message.getPayload());
+                                }
+                                break;
+                            default:
+                                logger.warn("Received unhandled message type: {} from peer {}. Message ID: {}",
+                                            message.getType(), peerId, message.getMessageId());
+                                break;
+                        }
+                    } catch (JsonProcessingException e) {
+                        logger.error("Failed to parse decrypted JSON message from peer {}: {}. Content: {}", peerId, e.getMessage(), decryptedJsonMessage, e);
+                    } catch (Exception e) { // Catch-all for other exceptions during message processing
+                        logger.error("Unexpected error processing message from peer {}. Message: {}. Error: {}", peerId, decryptedJsonMessage, e.getMessage(), e);
+                    }
+                    // --- End of new message processing logic ---
                 } else {
                     logger.warn("Failed to decrypt message from peer {}. Potentially corrupted or invalid key.", peerId);
                 }
@@ -178,11 +273,8 @@ public class P2PConnection implements Runnable {
         }
 
         try {
-            String jsonMessage = messageService.prepareOutgoingMessage(message);
-            if (jsonMessage == null) {
-                logger.error("Failed to serialize message for peer {}: {}. Message not sent.", peerId, message);
-                return;
-            }
+            // Use local ObjectMapper for serialization
+            String jsonMessage = objectMapper.writeValueAsString(message);
 
             logger.debug("Attempting to encrypt and send JSON message to {}: {}", peerId, jsonMessage.length() > 100 ? jsonMessage.substring(0,100)+"..." : jsonMessage);
 
@@ -195,12 +287,13 @@ public class P2PConnection implements Runnable {
             } else {
                 logger.error("Failed to encrypt JSON message for peer {}. Message not sent.", peerId);
             }
+        } catch (JsonProcessingException e) {
+            logger.error("Failed to serialize message to JSON for peer {}: {}. Error: {}", peerId, message, e.getMessage(), e);
         } catch (IOException e) {
             logger.error("IOException while sending message to peer {}: {}", peerId, e.getMessage(), e);
             close();
-        } catch (Exception e) { // Catch other potential runtime exceptions from services
+        } catch (Exception e) {
             logger.error("Unexpected error while sending message to peer {}: {}", peerId, e.getMessage(), e);
-            // Optionally close connection on unexpected errors too
         }
     }
 
@@ -261,7 +354,7 @@ public class P2PConnection implements Runnable {
          * @throws IOException if the super constructor throws it (though unlikely with null socket).
          */
         public Placeholder(String peerId) throws IOException {
-            super(null, peerId, null, null, null, null);
+            super(null, peerId, null, null, null, null, null);
             this.placeholderPeerId = peerId;
             logger.debug("P2PConnection.Placeholder created for peer: {}", peerId);
         }
@@ -277,7 +370,7 @@ public class P2PConnection implements Runnable {
         }
 
         @Override
-        public void sendMessage(Message message) { // Parameter changed to Message
+        public void sendMessage(Message message) {
             logger.warn("sendMessage called on Placeholder for peer {}. Message not sent.", placeholderPeerId);
         }
 

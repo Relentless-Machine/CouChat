@@ -1,5 +1,6 @@
 package com.couchat.messaging.model;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.Objects;
@@ -11,6 +12,7 @@ import java.util.UUID;
  * especially when loaded from the database.
  */
 public class Message implements Serializable {
+    @Serial
     private static final long serialVersionUID = 2L; // Updated serialVersionUID
 
     private final String messageId;
@@ -23,6 +25,7 @@ public class Message implements Serializable {
 
     private String originalMessageId; // For replies, can be set post-construction
     private MessageStatus status;     // Can be set post-construction
+    private Instant readAt; // Added readAt field
 
     public enum MessageType {
         TEXT,
@@ -67,6 +70,7 @@ public class Message implements Serializable {
         this.payload = payload; // Payload can be null for certain message types
         this.timestamp = Instant.now();
         this.status = MessageStatus.PENDING; // Default status for new messages
+        this.readAt = null; // Initialize readAt
     }
 
     /**
@@ -81,9 +85,10 @@ public class Message implements Serializable {
      * @param timestamp The time the message was created or sent.
      * @param originalMessageId The ID of the message this is a reply to (can be null).
      * @param status The current status of the message.
+     * @param readAt The time the message was read (can be null).
      */
     public Message(String messageId, String conversationId, MessageType type, String senderId, String recipientId,
-                   Object payload, Instant timestamp, String originalMessageId, MessageStatus status) {
+                   Object payload, Instant timestamp, String originalMessageId, MessageStatus status, Instant readAt) {
         this.messageId = Objects.requireNonNull(messageId, "messageId cannot be null");
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId cannot be null");
         this.type = Objects.requireNonNull(type, "type cannot be null");
@@ -93,6 +98,7 @@ public class Message implements Serializable {
         this.timestamp = Objects.requireNonNull(timestamp, "timestamp cannot be null");
         this.originalMessageId = originalMessageId;
         this.status = Objects.requireNonNull(status, "status cannot be null");
+        this.readAt = readAt;
     }
 
     // Getters
@@ -128,20 +134,28 @@ public class Message implements Serializable {
         return originalMessageId;
     }
 
-    // Setter for originalMessageId, as it might be set after initial creation (e.g. when user replies)
-    public void setOriginalMessageId(String originalMessageId) {
-        this.originalMessageId = originalMessageId;
-    }
-
     public MessageStatus getStatus() {
         return status;
     }
 
-    // Setter for status, as it changes during the message lifecycle
-    public void setStatus(MessageStatus status) {
-        this.status = Objects.requireNonNull(status, "status cannot be null");
+    public Instant getReadAt() {
+        return readAt;
     }
 
+    // Setters
+    public void setOriginalMessageId(String originalMessageId) {
+        this.originalMessageId = originalMessageId;
+    }
+
+    public void setStatus(MessageStatus status) {
+        this.status = status;
+    }
+
+    public void setReadAt(Instant readAt) {
+        this.readAt = readAt;
+    }
+
+    // equals, hashCode, toString methods
     @Override
     public String toString() {
         return "Message{" +

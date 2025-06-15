@@ -11,6 +11,7 @@ CREATE TABLE messages (
     message_type TEXT NOT NULL,           -- Type of message (e.g., TEXT, FILE_INFO, READ_RECEIPT)
     original_message_id TEXT,             -- For replies, references messages.message_id
     status TEXT DEFAULT 'PENDING',        -- PENDING, SENT, DELIVERED, READ, FAILED
+    read_at DATETIME DEFAULT NULL,        -- Timestamp when the message was read by recipient
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE, -- Added ON DELETE CASCADE
     FOREIGN KEY (original_message_id) REFERENCES messages(message_id) ON DELETE SET NULL, -- Assuming original_message_id can be nulled if original is deleted

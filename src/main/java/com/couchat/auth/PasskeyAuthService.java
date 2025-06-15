@@ -9,38 +9,37 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
-import java.security.SecureRandom;
-import java.util.Base64;
-import java.util.List; // Added import
-import java.util.Optional;
-import java.util.UUID;
 
-// TODO: This class needs significant refactoring to align with the new database schema
-// and a proper Passkey (WebAuthn) flow. The current file-based storage is a placeholder.
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.UUID;
 
 /**
  * Manages device passkey authentication and user association.
- * Placeholder: Current implementation uses local file storage for a single user/device concept.
- * This needs to be refactored to use the database (DeviceRepository, UserRepository)
- * and integrate with a proper Passkey (WebAuthn server-side) flow.
+ * This service will handle identifying the current device and loading associated user information.
+ * It will also provide methods for user registration and login, associating devices with users.
  */
 @Service
 public class PasskeyAuthService {
 
     private static final Logger logger = LoggerFactory.getLogger(PasskeyAuthService.class);
 
-    // Dependencies for database interaction (to be used in refactored version)
     private final DeviceRepository deviceRepository;
-    private final UserRepository userRepository;
+    private final UserRepository userRepository; // Keep for registration/login logic
 
-    // Old file-based properties (to be deprecated/removed)
-    // private static final String CONFIG_DIR_NAME = ".couchat";
-    // private static final String PROPERTIES_FILE_NAME = "user.properties";
-    // private static final String KEY_USER_ID = "user.id";
-    // private static final String KEY_DEVICE_PASSKEY = "device.passkey";
+    private static final String CONFIG_DIR_NAME = ".couchat";
+    private static final String DEVICE_PROPERTIES_FILE_NAME = "device.properties";
+    private static final String KEY_DEVICE_ID = "device.id";
 
-    private String localUserId; // Represents the currently "logged-in" user for this device instance
-    private String currentDeviceId; // Represents this specific device instance
+    private String localUserId;
+    private String currentDeviceId;
     private boolean authenticated = false;
 
     @Autowired
@@ -51,113 +50,252 @@ public class PasskeyAuthService {
 
     @PostConstruct
     public void init() {
-        // TODO: Refactor init() to:
-        // 1. Check if a device_id is stored locally (e.g., in a secure properties file or OS secure storage).
-        // 2. If found, try to load the device from DeviceRepository.
-        // 3. If not found, or if this is a "new registration" flow, guide user through user creation/login
-        //    and then device registration (Passkey creation).
-        // The old file-based logic is commented out as it's not compatible with multi-user/multi-device.
-        logger.warn("PasskeyAuthService.init() needs complete refactoring for database and proper Passkey flow.");
-        // For now, let's simulate a default user/device for demo if nothing else is set up.
-        // This is a placeholder for development and should not be used in production.
-        // initializeOrRegisterPlaceholderDevice(); // Called by isAuthenticated or getLocalUserId if needed
+        logger.info("Initializing PasskeyAuthService...");
+        this.currentDeviceId = loadLocalDeviceId();
+
+        if (this.currentDeviceId != null) {
+            logger.info("Loaded local device ID: {}", this.currentDeviceId);
+            Optional<Device> deviceOpt = deviceRepository.findById(this.currentDeviceId);
+            if (deviceOpt.isPresent()) {
+                Device device = deviceOpt.get();
+                this.localUserId = device.getUserId();
+                this.authenticated = true; // Mark as authenticated if device and user are found
+                logger.info("Device {} successfully authenticated for user ID: {}.", this.currentDeviceId, this.localUserId);
+            } else {
+                logger.warn("Device ID {} found locally, but no matching device found in the database. Device may need to be re-registered.", this.currentDeviceId);
+                // Optionally, clear the local device ID if it's invalid
+                // clearLocalDeviceId();
+                this.authenticated = false;
+            }
+        } else {
+            logger.info("No local device ID found. Device needs to be registered or user needs to log in to associate this device.");
+            this.authenticated = false;
+        }
     }
 
-    // Placeholder for a simplified device registration / retrieval for demo purposes
-    // This would be replaced by actual Passkey registration and login flows.
-    private void initializeOrRegisterPlaceholderDevice() {
-        if (this.authenticated) return; // Already initialized
-
-        logger.info("Attempting to initialize placeholder device and user...");
-        // Try to find a "default" user or create one
-        Optional<User> userOpt = userRepository.findByUsername("defaultUser");
-        User user;
-        if (userOpt.isEmpty()) {
-            user = new User("defaultUser"); // Uses constructor that generates UUID for userId
-            // user.setPasswordHash(generateSecurePasskey()); // Simulate a password/passkey - not strictly needed for this placeholder
-            userRepository.save(user);
-            logger.info("Created placeholder user: {} with ID: {}", user.getUsername(), user.getUserId());
-        }
-        else {
-            user = userOpt.get();
-            logger.info("Found existing placeholder user: {} with ID: {}", user.getUsername(), user.getUserId());
-        }
-        this.localUserId = user.getUserId();
-
-        // Try to find a device for this user or create one
-        List<Device> devices = deviceRepository.findByUserId(this.localUserId);
-        Device device;
-        if (devices.isEmpty()) {
-            device = new Device(this.localUserId, "Default Device"); // Uses constructor that generates UUID for deviceId
-            // Simulate a passkey credential ID being stored
-            // device.setPasskeyCredentialId(Base64.getUrlEncoder().encodeToString(UUID.randomUUID().toString().getBytes()));
-            deviceRepository.save(device);
-            logger.info("Created placeholder device: {} for user {}", device.getDeviceId(), this.localUserId);
-        }
-        else {
-            device = devices.get(0); // Just take the first one for this placeholder
-            logger.info("Found existing placeholder device: {} for user {}", device.getDeviceId(), this.localUserId);
-        }
-        this.currentDeviceId = device.getDeviceId();
-        this.authenticated = true;
-        logger.info("Placeholder authentication complete. UserID: {}, DeviceID: {}", this.localUserId, this.currentDeviceId);
+    private Path getDevicePropertiesPath() {
+        String userHome = System.getProperty("user.home");
+        return Paths.get(userHome, CONFIG_DIR_NAME, DEVICE_PROPERTIES_FILE_NAME);
     }
 
+    private String loadLocalDeviceId() {
+        Path propertiesPath = getDevicePropertiesPath();
+        if (Files.exists(propertiesPath)) {
+            Properties props = new Properties();
+            try (FileInputStream fis = new FileInputStream(propertiesPath.toFile())) {
+                props.load(fis);
+                String deviceId = props.getProperty(KEY_DEVICE_ID);
+                if (deviceId != null && !deviceId.trim().isEmpty()) {
+                    return deviceId.trim();
+                } else {
+                    logger.warn("Device properties file found, but {} is missing or empty.", KEY_DEVICE_ID);
+                }
+            } catch (IOException e) {
+                logger.error("Failed to load device ID from {}: {}", propertiesPath, e.getMessage());
+            }
+        } else {
+            logger.info("Device properties file not found at {}.", propertiesPath);
+        }
+        return null;
+    }
 
-    private String generateSecurePasskey() {
-        SecureRandom random = new SecureRandom();
-        byte[] bytes = new byte[32]; // 256 bits
-        random.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    private void saveLocalDeviceId(String deviceId) {
+        Path propertiesPath = getDevicePropertiesPath();
+        try {
+            Files.createDirectories(propertiesPath.getParent()); // Ensure .couchat directory exists
+            Properties props = new Properties();
+            props.setProperty(KEY_DEVICE_ID, deviceId);
+            try (FileOutputStream fos = new FileOutputStream(propertiesPath.toFile())) {
+                props.store(fos, "CouChat Device Configuration");
+                logger.info("Saved device ID {} to {}", deviceId, propertiesPath);
+            }
+        } catch (IOException e) {
+            logger.error("Failed to save device ID to {}: {}", propertiesPath, e.getMessage());
+        }
+    }
+
+    private void clearLocalDeviceId() {
+        Path propertiesPath = getDevicePropertiesPath();
+        try {
+            if (Files.deleteIfExists(propertiesPath)) {
+                logger.info("Cleared local device ID file: {}", propertiesPath);
+            }
+        } catch (IOException e) {
+            logger.error("Failed to delete local device ID file {}: {}", propertiesPath, e.getMessage());
+        }
     }
 
     /**
      * Gets the local user ID for the current authenticated session.
-     * TODO: This needs to be tied to an actual login session.
-     *
-     * @return The local user ID, or null if not authenticated (after trying placeholder init).
+     * @return The local user ID, or null if not authenticated.
      */
     public String getLocalUserId() {
         if (!authenticated) {
-            logger.warn("Attempted to get localUserId, but not authenticated. Triggering placeholder init.");
-            initializeOrRegisterPlaceholderDevice();
+            logger.warn("Attempted to get localUserId, but not authenticated.");
         }
         return localUserId;
     }
 
     /**
      * Gets the current device ID for this instance.
-     * TODO: This needs to be tied to an actual device registration and session.
-     *
-     * @return The current device ID, or null if not identified (after trying placeholder init).
+     * @return The current device ID, or null if not identified.
      */
     public String getCurrentDeviceId() {
-         if (!authenticated) {
-            logger.warn("Attempted to get currentDeviceId, but not authenticated. Triggering placeholder init.");
-            initializeOrRegisterPlaceholderDevice();
-        }
+         // currentDeviceId is loaded during init or set during registration/login
         return currentDeviceId;
     }
 
     /**
      * Checks if the current session is considered authenticated.
-     * TODO: This needs to be based on a proper authentication flow.
-     *
+     * Authentication means a local device ID is loaded and successfully mapped to a device and user in the database.
      * @return True if authenticated, false otherwise.
      */
     public boolean isAuthenticated() {
-        if (!authenticated) {
-             // logger.info("isAuthenticated() called: Not authenticated, attempting placeholder initialization.");
-             // initializeOrRegisterPlaceholderDevice(); // Let getLocalUserId or getCurrentDeviceId trigger this if needed.
-        }
         return authenticated;
     }
 
-    // TODO: Add methods for Passkey registration (begin, finish)
-    // public RegistrationResponse beginRegistration(String username) { ... }
-    // public boolean finishRegistration(String username, String registrationJson) { ... }
+    /**
+     * Registers a new user and associates the current device with this new user.
+     * If a local device ID already exists, this operation might be disallowed or handled specially.
+     *
+     * @param username The desired username for the new user.
+     * @param deviceName A user-friendly name for the current device.
+     * @return An Optional containing the new User if registration was successful, otherwise empty.
+     */
+    public Optional<User> registerNewUserAndDevice(String username, String deviceName) {
+        if (username == null || username.trim().isEmpty()) {
+            logger.warn("Registration attempt with empty username.");
+            return Optional.empty();
+        }
+        if (this.authenticated && this.currentDeviceId != null) {
+            // This case means a device ID is already loaded and authenticated.
+            // Re-registration might mean creating a new user for an already identified device,
+            // or it might be an error. For now, let's assume a new user means this device
+            // should be associated with that new user, potentially overwriting old association
+            // if the UI flow allows it. Or, more simply, disallow if already authenticated.
+            logger.warn("Registration attempt on an already authenticated device ({}). Current user: {}. This flow needs clarification.", this.currentDeviceId, this.localUserId);
+            // For now, let's prevent re-registration if already authenticated to avoid complexity.
+            // A proper flow would involve logging out or explicit re-association.
+             return Optional.empty(); // Or throw exception
+        }
 
-    // TODO: Add methods for Passkey authentication (begin, finish)
-    // public AuthenticationResponse beginAuthentication(String username) { ... }
-    // public boolean finishAuthentication(String username, String authenticationJson) { ... }
+        if (userRepository.findByUsername(username).isPresent()) {
+            logger.warn("Username {} already exists. Cannot register.", username);
+            return Optional.empty();
+        }
+
+        User newUser = new User(username.trim()); // Constructor generates userId
+        // In a real Passkey flow, password_hash might not be used directly.
+        // newUser.setPasswordHash(...); // If using passwords
+        userRepository.save(newUser);
+        logger.info("New user {} registered with ID: {}", newUser.getUsername(), newUser.getUserId());
+
+        Device newDevice = new Device(newUser.getUserId(), deviceName != null ? deviceName : "My Device");
+        // In a real Passkey flow, passkey_credential_id etc. would be set here after WebAuthn ceremony
+        deviceRepository.save(newDevice);
+        logger.info("New device {} registered for user {} with name: {}", newDevice.getDeviceId(), newUser.getUserId(), newDevice.getDeviceName());
+
+        saveLocalDeviceId(newDevice.getDeviceId());
+
+        // Update current service state
+        this.localUserId = newUser.getUserId();
+        this.currentDeviceId = newDevice.getDeviceId();
+        this.authenticated = true;
+
+        return Optional.of(newUser);
+    }
+
+    /**
+     * Logs in an existing user and associates the current device if not already associated.
+     * Placeholder: Uses username for "login". Real Passkey login is a challenge-response flow.
+     *
+     * @param username The username to log in.
+     * @param deviceName A user-friendly name for the current device if it needs to be newly associated.
+     * @return An Optional containing the User if login was successful, otherwise empty.
+     */
+    public Optional<User> loginUserAndAssociateDevice(String username, String deviceName) {
+        if (username == null || username.trim().isEmpty()) {
+            logger.warn("Login attempt with empty username.");
+            return Optional.empty();
+        }
+
+        Optional<User> userOpt = userRepository.findByUsername(username.trim());
+        if (userOpt.isEmpty()) {
+            logger.warn("Login failed: User {} not found.", username);
+            return Optional.empty();
+        }
+        User user = userOpt.get();
+
+        // At this point, user exists. Now, handle device association.
+        // If a local device ID was loaded at init and matches this user, we are good.
+        if (this.currentDeviceId != null) {
+            Optional<Device> existingDeviceOpt = deviceRepository.findById(this.currentDeviceId);
+            if (existingDeviceOpt.isPresent()) {
+                Device existingDevice = existingDeviceOpt.get();
+                if (existingDevice.getUserId().equals(user.getUserId())) {
+                    logger.info("User {} logged in. Device {} already associated and loaded.", user.getUsername(), this.currentDeviceId);
+                    this.localUserId = user.getUserId(); // Ensure it's set
+                    this.authenticated = true;
+                    return Optional.of(user);
+                } else {
+                    // Local device ID exists but belongs to a different user. This is a conflict.
+                    // Forcing re-association with the new login.
+                    logger.warn("Local device ID {} was associated with user {}, but logging in as user {}. Re-associating device.",
+                                this.currentDeviceId, existingDevice.getUserId(), user.getUserId());
+                    // Fall through to create new device association for the current user.
+                    // The old device ID stored locally will be overwritten.
+                }
+            }
+        }
+
+        // No valid local device ID for this user, or we are re-associating.
+        // Create a new device association for this user.
+        Device newDevice = new Device(user.getUserId(), deviceName != null ? deviceName : "My Device");
+        deviceRepository.save(newDevice);
+        logger.info("Associated new device {} for user {} with name: {}", newDevice.getDeviceId(), user.getUserId(), newDevice.getDeviceName());
+
+        saveLocalDeviceId(newDevice.getDeviceId());
+
+        this.localUserId = user.getUserId();
+        this.currentDeviceId = newDevice.getDeviceId();
+        this.authenticated = true;
+
+        return Optional.of(user);
+    }
+
+    /**
+     * Logs out the current user by clearing authentication state and local device ID.
+     */
+    public void logout() {
+        logger.info("Logging out user {} from device {}.", this.localUserId, this.currentDeviceId);
+        this.localUserId = null;
+        // this.currentDeviceId = null; // Keep currentDeviceId loaded from file unless explicitly cleared
+        this.authenticated = false;
+        clearLocalDeviceId(); // Clear the stored device ID to force re-login/re-registration next time
+        this.currentDeviceId = null; // Also clear in-memory
+        logger.info("User logged out. Local device ID cleared.");
+    }
+
+
+    // TODO: Implement actual Passkey (WebAuthn) server-side logic for:
+    // 1. Registration Challenge Generation (/passkey/register/begin)
+    //    - Takes username.
+    //    - Generates PublicKeyCredentialCreationOptions.
+    //    - Stores challenge temporarily (e.g., in HTTP session or short-lived cache).
+    //    - Returns options to client.
+    // 2. Registration Verification (/passkey/register/finish)
+    //    - Takes client's response (PublicKeyCredential).
+    //    - Verifies signature, challenge, origin, etc.
+    //    - If valid, creates User (if new), creates Device (stores credentialId, publicKey, signCount).
+    //    - Saves local device ID. Sets authenticated state.
+    // 3. Authentication Challenge Generation (/passkey/login/begin)
+    //    - Optionally takes username, or allows discovery by credentialId.
+    //    - Generates PublicKeyCredentialRequestOptions (allows specific credential IDs for this user).
+    //    - Stores challenge.
+    //    - Returns options to client.
+    // 4. Authentication Verification (/passkey/login/finish)
+    //    - Takes client's response.
+    //    - Verifies signature, challenge, sign count.
+    //    - If valid, loads User and Device.
+    //    - Saves local device ID. Sets authenticated state.
 }
