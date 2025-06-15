@@ -108,6 +108,7 @@ public class ConversationController {
         // TODO: Add permission check: ensure current user is part of this conversation
         Optional<Conversation> updatedConversation = conversationService.updateConversationFlags(
                 conversationId,
+                userId, // Added userId argument here
                 updateRequest.getIsArchived(),
                 updateRequest.getIsMuted(),
                 updateRequest.getIsPinned()
@@ -132,4 +133,3 @@ public class ConversationController {
 
     // TODO: Add endpoint for deleting a conversation (DELETE /{conversationId})
 }
-

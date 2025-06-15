@@ -1,3 +1,4 @@
+// filepath: F:/Git/CouChat/src/main/java/com/couchat/repository/impl/JdbcMessageRepository.java
 package com.couchat.repository.impl;
 
 import com.couchat.messaging.model.Message;
@@ -9,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -20,276 +20,171 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
-// Assuming Message.java will be refactored to have a constructor suitable for DB mapping
-// import com.couchat.messaging.model.Message.MessageType; // Already imported via Message
-// import com.couchat.messaging.model.Message.MessageStatus; // Already imported via Message
 
-/**
- * JDBC implementation of the {@link MessageRepository} interface.
- * Handles database operations for {@link Message} entities using JdbcTemplate.
- */
 @Repository
 public class JdbcMessageRepository implements MessageRepository {
 
     private static final Logger logger = LoggerFactory.getLogger(JdbcMessageRepository.class);
     private final JdbcTemplate jdbcTemplate;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper; // For serializing/deserializing payload
 
-    /**
-     * Constructs a new JdbcMessageRepository.
-     *
-     * @param jdbcTemplate The JdbcTemplate to use for database access.
-     * @param objectMapper The ObjectMapper for JSON serialization/deserialization.
-     */
     @Autowired
-    public JdbcMessageRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+    public JdbcMessageRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
-        this.objectMapper = objectMapper;
-        // Ensure JavaTimeModule is registered if not done globally
-        if (!this.objectMapper.getRegisteredModuleIds().contains(JavaTimeModule.class.getName())) {
-            this.objectMapper.registerModule(new JavaTimeModule());
-        }
+        this.objectMapper = new ObjectMapper();
+        this.objectMapper.registerModule(new JavaTimeModule());
     }
 
-    /**
-     * RowMapper to map a ResultSet row to a {@link Message} object.
-     * This RowMapper assumes that {@link Message} has a constructor or setters
-     * that allow all fields fetched from the database to be set.
-     */
-    private RowMapper<Message> messageRowMapper() {
-        return (rs, rowNum) -> {
-            String messageId = rs.getString("message_id");
-            String conversationId = rs.getString("conversation_id");
-            String senderId = rs.getString("sender_id");
-            String payloadJson = rs.getString("payload");
-            String messageTypeStr = rs.getString("message_type");
-            String originalMessageId = rs.getString("original_message_id");
-            String statusStr = rs.getString("status");
-            Instant timestamp = rs.getTimestamp("timestamp").toInstant();
+    private RowMapper<Message> messageRowMapper() { // Made it a method returning the instance
+      return (rs, rowNum) -> {
+        String messageId = rs.getString("message_id");
+        String conversationId = rs.getString("conversation_id");
+        Message.MessageType type = Message.MessageType.valueOf(rs.getString("message_type"));
+        String senderId = rs.getString("sender_id");
+        String recipientId = rs.getString("recipient_id");
 
-            Object payloadObject = null;
-            if (payloadJson != null) {
-                try {
-                    // TODO: Determine the specific class for payload based on messageType or store class info
-                    payloadObject = objectMapper.readValue(payloadJson, Object.class);
-                } catch (JsonProcessingException e) {
-                    logger.error("Error deserializing message payload for messageId {}: {}", messageId, e.getMessage(), e);
-                    // Depending on requirements, might throw, or return message with null/raw payload
-                }
+        Object payloadObject;
+        String payloadJson = rs.getString("payload");
+        try {
+            if (payloadJson != null && (payloadJson.startsWith("{") || payloadJson.startsWith("["))) {
+                payloadObject = objectMapper.readValue(payloadJson, Object.class);
+            } else {
+                payloadObject = payloadJson;
             }
+        } catch (JsonProcessingException e) {
+            logger.error("Error deserializing payload for messageId {}: {}", messageId, e.getMessage());
+            payloadObject = payloadJson; // Fallback to raw string
+        }
 
-            // The 'recipient_id' is not directly in the 'messages' table in our current schema.
-            // It's part of the 'conversations' table logic (target_peer_id) or implied.
-            // Passing null for recipientId when constructing from 'messages' table row.
-            // The service layer can enrich this if necessary.
-            String recipientIdFromDb = null; // Or rs.getString("recipient_id") if we add it to the messages table
+        Instant timestamp = rs.getTimestamp("timestamp").toInstant();
+        String originalMessageId = rs.getString("original_message_id");
+        Message.MessageStatus status = Message.MessageStatus.valueOf(rs.getString("status"));
 
-            return new Message(
-                    messageId,
-                    conversationId,
-                    Message.MessageType.valueOf(messageTypeStr),
-                    senderId,
-                    recipientIdFromDb, // This is fine as Message constructor accepts null recipientId
-                    payloadObject,
-                    timestamp,
-                    originalMessageId,
-                    Message.MessageStatus.valueOf(statusStr)
-            );
-        };
+        Timestamp readAtTs = rs.getTimestamp("read_at");
+        Instant readAt = (readAtTs != null) ? readAtTs.toInstant() : null;
+
+        return new Message(messageId, conversationId, type, senderId, recipientId,
+                           payloadObject, timestamp, originalMessageId, status, readAt);
+      };
     }
 
     @Override
     public Message save(Message message) {
-        if (message == null) {
-            throw new IllegalArgumentException("Message to save cannot be null.");
-        }
-        // Message ID should be set by the Message constructor for new messages (UUID.randomUUID().toString())
-        // or be present if it's an existing message being loaded/updated.
-        if (message.getMessageId() == null) {
-           throw new IllegalArgumentException("Message ID cannot be null when saving.");
-        }
-        if (message.getConversationId() == null) {
-            throw new IllegalArgumentException("Conversation ID cannot be null in Message to be saved.");
-        }
-
         String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(message.getPayload());
+            if (message.getPayload() != null && !(message.getPayload() instanceof String)) {
+                 payloadJson = objectMapper.writeValueAsString(message.getPayload());
+            } else {
+                 payloadJson = (String) message.getPayload();
+            }
         } catch (JsonProcessingException e) {
-            logger.error("Error serializing message payload for save: {}", e.getMessage(), e);
-            // Consider a custom unchecked exception
-            throw new RuntimeException("Failed to serialize message payload", e);
+            logger.error("Error serializing payload for message save {}: {}", message.getMessageId(), e.getMessage());
+            payloadJson = (message.getPayload() != null) ? message.getPayload().toString() : null;
         }
 
-        String sql = "INSERT INTO messages (message_id, conversation_id, sender_id, payload, message_type, " +
-                     "original_message_id, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
-                     "ON CONFLICT(message_id) DO UPDATE SET " +
-                     "conversation_id = excluded.conversation_id, " +
-                     "sender_id = excluded.sender_id, " +
-                     "payload = excluded.payload, " +
-                     "message_type = excluded.message_type, " +
-                     "original_message_id = excluded.original_message_id, " +
-                     "status = excluded.status, " +
-                     "timestamp = excluded.timestamp";
+        Optional<Message> existingMessage = Optional.empty(); // findById(message.getMessageId());
+        // For simplicity in this restoration, we'll assume new messages are always INSERT
+        // and updates (like status/readAt) are handled by specific methods or by re-saving.
+        // A robust save would check existence or use UPSERT.
 
-        try {
-            jdbcTemplate.update(sql,
-                    message.getMessageId(),
-                    message.getConversationId(), // Now correctly uses getConversationId()
-                    message.getSenderId(),
-                    payloadJson,
-                    message.getType().name(),
-                    message.getOriginalMessageId(),
-                    message.getStatus() != null ? message.getStatus().name() : Message.MessageStatus.PENDING.name(),
-                    Timestamp.from(message.getTimestamp()));
-            return message;
-        } catch (DataAccessException e) {
-            logger.error("Error saving message with ID {}: {}", message.getMessageId(), e.getMessage(), e);
-            // Depending on policy, rethrow as custom exception or return null/Optional.empty()
-            throw new RuntimeException("Failed to save message", e);
+        // If message status indicates it's an update (e.g. READ), try UPDATE first.
+        // This is a heuristic. A cleaner way is to have separate create/update methods or rely on caller.
+        boolean updated = false;
+        if (message.getStatus() == Message.MessageStatus.READ && message.getReadAt() != null) {
+             String updateSql = "UPDATE messages SET status = ?, read_at = ? WHERE message_id = ?";
+             int rows = jdbcTemplate.update(updateSql, message.getStatus().name(), message.getReadAt(), message.getMessageId());
+             if (rows > 0) updated = true;
         }
+
+        if (!updated) { // If not updated (e.g. it was a new message or status wasn't READ)
+            // Attempt to find if it exists to prevent duplicate PK errors on simple re-saves
+            try {
+                existingMessage = findById(message.getMessageId());
+            } catch (DataAccessException e) { /* ignore, means it likely doesn't exist */ }
+
+            if (existingMessage.isPresent()) {
+                // Update existing message - more comprehensive update
+                String sql = "UPDATE messages SET conversation_id = ?, sender_id = ?, recipient_id = ?, payload = ?, " +
+                             "message_type = ?, original_message_id = ?, status = ?, read_at = ?, timestamp = ? " +
+                             "WHERE message_id = ?";
+                jdbcTemplate.update(sql,
+                        message.getConversationId(),
+                        message.getSenderId(),
+                        message.getRecipientId(),
+                        payloadJson,
+                        message.getType().name(),
+                        message.getOriginalMessageId(),
+                        message.getStatus().name(),
+                        message.getReadAt(),
+                        Timestamp.from(message.getTimestamp()),
+                        message.getMessageId());
+                logger.debug("Updated message with ID: {}", message.getMessageId());
+            } else {
+                // Insert new message
+                String sql = "INSERT INTO messages (message_id, conversation_id, sender_id, recipient_id, payload, " +
+                             "message_type, original_message_id, status, read_at, timestamp) " +
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                jdbcTemplate.update(sql,
+                        message.getMessageId(),
+                        message.getConversationId(),
+                        message.getSenderId(),
+                        message.getRecipientId(),
+                        payloadJson,
+                        message.getType().name(),
+                        message.getOriginalMessageId(),
+                        message.getStatus().name(),
+                        message.getReadAt(),
+                        Timestamp.from(message.getTimestamp()));
+                logger.debug("Inserted new message with ID: {}", message.getMessageId());
+            }
+        }
+        return message;
     }
 
     @Override
     public Optional<Message> findById(String messageId) {
-        if (messageId == null) {
-            return Optional.empty();
-        }
         String sql = "SELECT * FROM messages WHERE message_id = ?";
         try {
-            Message message = jdbcTemplate.queryForObject(sql, new Object[]{messageId}, messageRowMapper());
-            return Optional.ofNullable(message);
-        } catch (EmptyResultDataAccessException e) {
-            logger.debug("No message found with ID: {}", messageId);
+            // Pass the RowMapper instance directly
+            return Optional.ofNullable(jdbcTemplate.queryForObject(sql, new Object[]{messageId}, messageRowMapper()));
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
             return Optional.empty();
-        } catch (DataAccessException e) {
-            logger.error("Error finding message by ID {}: {}", messageId, e.getMessage(), e);
-            return Optional.empty(); // Or rethrow
-        }
-    }
-
-    @Override
-    public boolean updateMessageStatus(String messageId, Message.MessageStatus newStatus) {
-        if (messageId == null || newStatus == null) {
-            throw new IllegalArgumentException("Message ID and new status cannot be null for update.");
-        }
-        String sql = "UPDATE messages SET status = ? WHERE message_id = ?";
-        try {
-            int rowsAffected = jdbcTemplate.update(sql, newStatus.name(), messageId);
-            return rowsAffected > 0;
-        } catch (DataAccessException e) {
-            logger.error("Error updating status for message ID {}: {}", messageId, e.getMessage(), e);
-            return false; // Or rethrow
         }
     }
 
     @Override
     public List<Message> findByConversationIdOrderByTimestampDesc(String conversationId, int limit, int offset) {
-        if (conversationId == null) {
-            throw new IllegalArgumentException("Conversation ID cannot be null.");
-        }
         String sql = "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-        try {
-            return jdbcTemplate.query(sql, new Object[]{conversationId, limit, offset}, messageRowMapper());
-        } catch (DataAccessException e) {
-            logger.error("Error finding messages by conversation ID {}: {}", conversationId, e.getMessage(), e);
-            return List.of(); // Or rethrow
-        }
+        // Pass the RowMapper instance directly
+        return jdbcTemplate.query(sql, new Object[]{conversationId, limit, offset}, messageRowMapper());
     }
 
     @Override
-    public List<Message> findByConversationIdAndTimestampAfter(String conversationId, Instant afterTimestamp) {
-        if (conversationId == null || afterTimestamp == null) {
-            throw new IllegalArgumentException("Conversation ID and timestamp cannot be null.");
+    public int markMessagesAsRead(String conversationId, String userId, Instant readAtTimestamp) {
+        String sql = "UPDATE messages SET status = ?, read_at = ? " +
+                     "WHERE conversation_id = ? AND recipient_id = ? AND status <> ? AND (read_at IS NULL OR read_at < ?)";
+        int updatedRows = jdbcTemplate.update(sql,
+                Message.MessageStatus.READ.name(),
+                Timestamp.from(readAtTimestamp),
+                conversationId,
+                userId,
+                Message.MessageStatus.READ.name(),
+                Timestamp.from(readAtTimestamp)
+        );
+        if (updatedRows > 0) {
+            logger.info("Marked {} messages as READ for user {} in conversation {}", updatedRows, userId, conversationId);
         }
-        String sql = "SELECT * FROM messages WHERE conversation_id = ? AND timestamp > ? ORDER BY timestamp ASC";
-        try {
-            return jdbcTemplate.query(sql, new Object[]{conversationId, Timestamp.from(afterTimestamp)}, messageRowMapper());
-        } catch (DataAccessException e) {
-            logger.error("Error finding messages by conversation ID {} after {}: {}", conversationId, afterTimestamp, e.getMessage(), e);
-            return List.of(); // Or rethrow
-        }
+        return updatedRows;
     }
 
     @Override
-    public List<Message> findRepliesByOriginalMessageIdOrderByTimestampAsc(String originalMessageId) {
-        if (originalMessageId == null) {
-            throw new IllegalArgumentException("Original message ID cannot be null.");
-        }
-        String sql = "SELECT * FROM messages WHERE original_message_id = ? ORDER BY timestamp ASC";
-        try {
-            return jdbcTemplate.query(sql, new Object[]{originalMessageId}, messageRowMapper());
-        } catch (DataAccessException e) {
-            logger.error("Error finding replies for original message ID {}: {}", originalMessageId, e.getMessage(), e);
-            return List.of(); // Or rethrow
-        }
-    }
-
-    @Override
-    public List<Message> findMessagesByUserIdAndStatus(String userId, Message.MessageStatus status) {
-        if (userId == null || status == null) {
-            throw new IllegalArgumentException("User ID and status cannot be null.");
-        }
-        // This query finds messages SENT by the userId with a specific status.
-        // For messages RECEIVED by userId, a more complex query involving conversations would be needed.
-        String sql = "SELECT * FROM messages WHERE sender_id = ? AND status = ? ORDER BY timestamp DESC";
-        try {
-            return jdbcTemplate.query(sql, new Object[]{userId, status.name()}, messageRowMapper());
-        } catch (DataAccessException e) {
-            logger.error("Error finding messages by user ID {} and status {}: {}", userId, status, e.getMessage(), e);
-            return List.of(); // Or rethrow
-        }
-    }
-
-    @Override
-    public boolean deleteById(String messageId) {
-        if (messageId == null) {
-            throw new IllegalArgumentException("Message ID cannot be null for deletion.");
-        }
-        // Consider implications of foreign key constraints if messages are referenced elsewhere (e.g., conversations.last_message_id)
-        // Soft delete (e.g., setting a 'deleted' flag or moving to an archive table) might be safer.
-        // For now, performing a hard delete.
+    public void deleteById(String messageId) {
         String sql = "DELETE FROM messages WHERE message_id = ?";
-        try {
-            int rowsAffected = jdbcTemplate.update(sql, messageId);
-            return rowsAffected > 0;
-        } catch (DataAccessException e) {
-            logger.error("Error deleting message by ID {}: {}", messageId, e.getMessage(), e);
-            return false; // Or rethrow
-        }
-    }
-
-    @Override
-    public long countUnreadMessagesByConversationIdAndUserId(String conversationId, String userId) {
-        if (conversationId == null || userId == null) {
-            throw new IllegalArgumentException("Conversation ID and User ID cannot be null.");
-        }
-        // Counts messages in the conversation NOT sent by the given userId and are not READ.
-        String sql = "SELECT COUNT(*) FROM messages " +
-                     "WHERE conversation_id = ? AND sender_id != ? AND status != ?";
-        try {
-            Long count = jdbcTemplate.queryForObject(sql, new Object[]{conversationId, userId, Message.MessageStatus.READ.name()}, Long.class);
-            return count != null ? count : 0L;
-        } catch (DataAccessException e) {
-            logger.error("Error counting unread messages for conversation {} and user {}: {}", conversationId, userId, e.getMessage(), e);
-            return 0L; // Or rethrow
-        }
-    }
-
-    @Override
-    public int markMessagesAsRead(String conversationId, String userId) {
-        if (conversationId == null || userId == null) {
-            throw new IllegalArgumentException("Conversation ID and User ID cannot be null.");
-        }
-        // Marks messages in the conversation as READ if they were not sent by the given userId
-        // and are not already READ.
-        String sql = "UPDATE messages SET status = ? " +
-                     "WHERE conversation_id = ? AND sender_id != ? AND status != ?";
-        try {
-            return jdbcTemplate.update(sql, Message.MessageStatus.READ.name(), conversationId, userId, Message.MessageStatus.READ.name());
-        } catch (DataAccessException e) {
-            logger.error("Error marking messages as read for conversation {} and user {}: {}", conversationId, userId, e.getMessage(), e);
-            return 0; // Or rethrow
+        int deletedRows = jdbcTemplate.update(sql, messageId);
+        if (deletedRows > 0) {
+            logger.info("Deleted message with ID: {}", messageId);
+        } else {
+            logger.warn("No message found with ID: {} to delete.", messageId);
         }
     }
 }

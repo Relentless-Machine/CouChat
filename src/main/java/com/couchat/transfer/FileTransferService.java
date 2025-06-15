@@ -1,7 +1,7 @@
 package com.couchat.transfer;
 
 import com.couchat.auth.PasskeyAuthService;
-import com.couchat.messaging.MessageService;
+import com.couchat.messaging.service.MessageService;
 import com.couchat.messaging.model.FileChunk;
 import com.couchat.messaging.model.FileInfo;
 import com.couchat.messaging.model.Message; // Ensure this is the correct Message class
@@ -10,10 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-
-import com.couchat.transfer.FileTransferStatus;
-import com.couchat.transfer.IncomingFileTransfer;
-import com.couchat.transfer.OutgoingFileTransfer;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -94,6 +90,10 @@ public class FileTransferService {
             return null;
         }
         String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
+        if (localUserId == null) {
+            logger.warn("Cannot initiate file transfer: Local user ID is null.");
+            return null;
+        }
 
         File file = new File(filePath);
         if (!file.exists() || !file.isFile() || !file.canRead()) {
@@ -233,7 +233,7 @@ public class FileTransferService {
                     transfer.setStatus(FileTransferStatus.FAILED);
                     logger.error("Mismatch in sent chunks ({}) and total chunks ({}) for file ID: {}. Marking as failed.",
                                  chunkIndex, transfer.getFileInfo().getTotalChunks(), fileId);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "Chunk sending mismatch");
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "CHUNK_SENDING_MISMATCH", "Chunk sending mismatch");
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
 
@@ -241,14 +241,14 @@ public class FileTransferService {
                 logger.error("IOException while sending chunks for file ID: {}. Error: {}", fileId, e.getMessage(), e);
                 if (transfer.getStatus() != FileTransferStatus.FAILED) { // Avoid double error reporting
                     transfer.setStatus(FileTransferStatus.FAILED);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "IO error during sending: " + e.getMessage());
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "IO_ERROR_SENDING", "IO error during sending: " + e.getMessage());
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
             } catch (Exception e) {
                 logger.error("Unexpected error while sending chunks for file ID: {}. Error: {}", fileId, e.getMessage(), e);
                  if (transfer.getStatus() != FileTransferStatus.FAILED) {
                     transfer.setStatus(FileTransferStatus.FAILED);
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "Unexpected error during sending: " + e.getMessage());
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getRecipientId(), fileId, "UNEXPECTED_ERROR_SENDING", "Unexpected error during sending: " + e.getMessage());
                     p2pConnectionManager.sendMessage(transfer.getRecipientId(), errorMessage);
                 }
             }
@@ -304,7 +304,7 @@ public class FileTransferService {
                 // Send FILE_TRANSFER_REJECTED or FILE_TRANSFER_ERROR back to sender
                 String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
                 if (localUserId != null) {
-                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileInfo.getFileId(), "File name collision or storage issue on recipient side.");
+                    Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileInfo.getFileId(), "FILENAME_COLLISION", "File name collision or storage issue on recipient side.");
                     p2pConnectionManager.sendMessage(senderId, errorMessage);
                 }
                 return;
@@ -381,9 +381,9 @@ public class FileTransferService {
         // More robust handling would involve managing a bitfield or list of received chunks.
 
         try {
-            boolean isComplete = transfer.addChunk(fileChunk.getData()); // This method should handle writing to file
+            boolean isComplete = transfer.addChunk(fileChunk.getChunkIndex(), fileChunk.getData()); // This method should handle writing to file
             logger.debug("Received and processed chunk {} for file ID: {}. Total received: {}/{}",
-                         fileChunk.getChunkIndex() + 1, fileId, transfer.getChunksReceived(), transfer.getFileInfo().getTotalChunks());
+                         fileChunk.getChunkIndex() + 1, fileId, transfer.getChunksReceivedCount(), transfer.getFileInfo().getTotalChunks());
 
             if (isComplete) {
                 transfer.setStatus(FileTransferStatus.COMPLETED);
@@ -400,7 +400,7 @@ public class FileTransferService {
             // Send error message back to sender
             String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
             if (localUserId != null) {
-                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "IO error on recipient while writing chunk: " + e.getMessage());
+                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "IO_ERROR_RECEIVING_CHUNK", "IO error on recipient while writing chunk: " + e.getMessage());
                 p2pConnectionManager.sendMessage(senderId, errorMessage);
             }
         } catch (Exception e) {
@@ -409,7 +409,7 @@ public class FileTransferService {
             transfer.closeAndCleanupFile();
             String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
             if (localUserId != null) {
-                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "Unexpected error on recipient processing chunk: " + e.getMessage());
+                Message errorMessage = messageService.createFileTransferErrorMessage(localUserId, senderId, fileId, "UNEXPECTED_ERROR_PROCESSING_CHUNK", "Unexpected error on recipient processing chunk: " + e.getMessage());
                 p2pConnectionManager.sendMessage(senderId, errorMessage);
             }
         }
@@ -457,7 +457,7 @@ public class FileTransferService {
      * Handles the FILE_TRANSFER_ERROR message from the other peer.
      *
      * @param fileId The ID of the failed file transfer.
-     * @param senderId The peer ID of the sender of the error message.
+     * @param senderOfError The peer ID of the sender of the error message.
      * @param errorCode An optional error code.
      * @param errorMessageText The error message.
      */
@@ -508,32 +508,42 @@ public class FileTransferService {
         // The receiver (this instance) should verify if all chunks were indeed received.
         logger.info("Sender {} reported FILE_TRANSFER_COMPLETE for file ID: {}. Verifying received chunks.", senderId, fileId);
 
-        if (transfer.getStatus() == FileTransferStatus.RECEIVING_CHUNKS || transfer.getStatus() == FileTransferStatus.AWAITING_CHUNKS) {
-            // Check if all chunks are received
-            if (transfer.areAllChunksReceived()) {
-                try {
-                    transfer.assembleFile(); // This method now also sets status to COMPLETED
-                    logger.info("Successfully assembled file ID: {} from sender: {}. Path: {}",
-                                fileId, senderId, transfer.getFinalFilePath());
-                    // Optionally, send a final acknowledgment to the sender, though not strictly required by current flow
-                } catch (IOException e) {
-                    logger.error("Failed to assemble file ID: {} from sender: {}. Error: {}", fileId, senderId, e.getMessage(), e);
-                    transfer.setStatus(FileTransferStatus.FAILED);
-                    // Inform sender about the failure to assemble
-                    Message errorMessage = messageService.createFileTransferErrorMessage(
-                        passkeyAuthService.getLocalUserId(), // local user is sending the error
-                        senderId, // recipient of error is the original sender
-                        fileId,
-                        "ASSEMBLY_FAILED",
-                        "Receiver failed to assemble file: " + e.getMessage()
-                    );
-                    p2pConnectionManager.sendMessage(senderId, errorMessage);
+        if (transfer.getStatus() == FileTransferStatus.RECEIVING_CHUNKS || transfer.getStatus() == FileTransferStatus.AWAITING_ACCEPTANCE ) { // Corrected: AWAITING_ACCEPTANCE to AWAITING_CHUNKS if that's a valid state before receiving
+            // It's more likely that if FILE_TRANSFER_COMPLETE is received, status should be RECEIVING_CHUNKS
+            // If AWAITING_CHUNKS is a valid status, it should be included.
+            // For now, assuming AWAITING_CHUNKS is not a typical state when sender sends COMPLETE.
+            // Let's stick to RECEIVING_CHUNKS for now or consider if AWAITING_CHUNKS is a valid intermediate state.
+            // The error log mentioned AWAITING_CHUNKS was missing, so let's assume this was a typo and it should be RECEIVING_CHUNKS
+            // or that AWAITING_CHUNKS needs to be added to FileTransferStatus enum.
+            // For now, I will assume the original intent was to check if it's actively receiving.
+
+            if (transfer.getStatus() == FileTransferStatus.RECEIVING_CHUNKS) { // More specific check
+                if (transfer.areAllChunksReceived()) {
+                    try {
+                        transfer.assembleFile(); // This method now also sets status to COMPLETED
+                        logger.info("Successfully assembled file ID: {} from sender: {}. Path: {}",
+                                    fileId, senderId, transfer.getFinalFilePath());
+                    } catch (IOException e) {
+                        logger.error("Failed to assemble file ID: {} from sender: {}. Error: {}", fileId, senderId, e.getMessage(), e);
+                        transfer.setStatus(FileTransferStatus.FAILED);
+                        Message errorMessage = messageService.createFileTransferErrorMessage(
+                            passkeyAuthService.getLocalUserId(),
+                            senderId,
+                            fileId,
+                            "ASSEMBLY_FAILED",
+                            "Receiver failed to assemble file: " + e.getMessage()
+                        );
+                        p2pConnectionManager.sendMessage(senderId, errorMessage);
+                    }
+                } else {
+                    logger.warn("Sender {} reported FILE_TRANSFER_COMPLETE for file ID: {}, but not all chunks have been received locally. Expected: {}, Got: {}. Waiting for more chunks or timeout.",
+                                senderId, fileId, transfer.getFileInfo().getTotalChunks(), transfer.getChunksReceivedCount());
+                    // Do not change status yet, wait for more chunks or a timeout mechanism to declare it failed.
+                    // The sender might have sent COMPLETE, but chunks might still be in transit or lost.
                 }
             } else {
-                logger.warn("Sender {} reported FILE_TRANSFER_COMPLETE for file ID: {}, but not all chunks have been received locally. Expected: {}, Got: {}. Waiting for more chunks or timeout.",
-                            senderId, fileId, transfer.getFileInfo().getTotalChunks(), transfer.getChunksReceivedCount());
-                // Do not change status yet, wait for more chunks or a timeout mechanism to declare it failed.
-                // The sender might have sent COMPLETE, but chunks might still be in transit or lost.
+                 logger.warn("Received FILE_TRANSFER_COMPLETE for file ID: {} from sender: {} but status is {}. Verification might be premature.",
+                            fileId, senderId, transfer.getStatus());
             }
         } else {
             logger.warn("Received FILE_TRANSFER_COMPLETE for file ID: {} from sender: {} but current status is {}. No action taken.",

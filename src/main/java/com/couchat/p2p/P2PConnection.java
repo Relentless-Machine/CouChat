@@ -222,6 +222,9 @@ public class P2PConnection implements Runnable {
                         }
                     } catch (JsonProcessingException e) {
                         logger.error("Failed to parse decrypted JSON message from peer {}: {}. Content: {}", peerId, e.getMessage(), decryptedJsonMessage, e);
+                        // More verbose logging for JsonProcessingException
+                        System.err.println("[P2PConnection] JSON PARSING FAILED for peer " + peerId + ". Content: " + decryptedJsonMessage);
+                        e.printStackTrace(System.err);
                     } catch (Exception e) { // Catch-all for other exceptions during message processing
                         logger.error("Unexpected error processing message from peer {}. Message: {}. Error: {}", peerId, decryptedJsonMessage, e.getMessage(), e);
                     }

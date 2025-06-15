@@ -41,13 +41,12 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
-        <!-- WireGuard/NAT Traversal library (示例, 请替换为���������际库) -->
+        <!-- WireGuard/NAT Traversal library (示例, 请替换为�����际库) -->
         <wireguard.version>1.0.0</wireguard.version>
         <sqlite.version>3.41.2.2</sqlite.version> <!-- Updated SQLite version -->
-        <junit.jupiter.version>5.8.2</junit.jupiter.version>
         <mockito.core.version>4.5.1</mockito.core.version>
         <ice4j.version>3.2-8-gfa5f931</ice4j.version> <!-- Added ice4j version -->
-        <jackson.version>2.17.0</jackson.version> <!-- Jackson version -->
+        <!-- <jackson.version>2.17.0</jackson.version> Jackson version --> <!-- Removed for Spring Boot to manage -->
     </properties>
 
     <dependencies>
@@ -110,13 +109,13 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>${junit.jupiter.version}</version>
+            <!-- <version>${junit.jupiter.version}</version> --> <!-- Removed for Spring Boot to manage -->
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>${junit.jupiter.version}</version>
+            <!-- <version>${junit.jupiter.version}</version> --> <!-- Removed for Spring Boot to manage -->
             <scope>test</scope>
         </dependency>
 
@@ -134,17 +133,37 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Spring Boot Test Starter -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.junit.vintage</groupId>
+                    <artifactId>junit-vintage-engine</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
         <!-- Jackson Databind for JSON serialization/deserialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
+            <!-- <version>${jackson.version}</version> --> <!-- Removed for Spring Boot to manage -->
         </dependency>
         <!-- Jackson Datatype JSR310 for Java 8 Date/Time types (like Instant) -->
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>${jackson.version}</version>
+            <!-- <version>${jackson.version}</version> --> <!-- Removed for Spring Boot to manage -->
+        </dependency>
+
+        <!-- Spring Security Test -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
         </dependency>
 
     </dependencies>
@@ -170,7 +189,7 @@
              <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>2.22.2</version>
+                <!-- <version>2.22.2</version> --> <!-- Removed for Spring Boot to manage -->
             </plugin>
         </plugins>
     </build>

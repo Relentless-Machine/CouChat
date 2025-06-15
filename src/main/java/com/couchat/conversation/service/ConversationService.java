@@ -128,56 +128,74 @@ public class ConversationService {
     }
 
     /**
-     * Updates conversation properties like archived, muted, pinned status.
+     * Updates the flags (archived, muted, pinned) for a conversation for a specific user.
      *
      * @param conversationId The ID of the conversation.
-     * @param isArchived New archived status (optional).
-     * @param isMuted New muted status (optional).
-     * @param isPinned New pinned status (optional).
-     * @return The updated conversation or empty if not found.
+     * @param userId The ID of the user for whom these flags are being set.
+     * @param isArchived     New archived status.
+     * @param isMuted        New muted status.
+     * @param isPinned       New pinned status.
+     * @return Optional containing the updated conversation, or empty if not found.
      */
     @Transactional
-    public Optional<Conversation> updateConversationFlags(String conversationId, Boolean isArchived, Boolean isMuted, Boolean isPinned) {
-        logger.info("ConversationService.updateConversationFlags for id: {}", conversationId);
+    public Optional<Conversation> updateConversationFlags(String conversationId, String userId, Boolean isArchived, Boolean isMuted, Boolean isPinned) {
+        logger.info("ConversationService.updateConversationFlags for id: {}, userId: {}", conversationId, userId);
         Optional<Conversation> convOpt = conversationRepository.findById(conversationId);
         if (convOpt.isEmpty()) {
+            logger.warn("Conversation not found with id: {}", conversationId);
             return Optional.empty();
         }
         Conversation conversation = convOpt.get();
         boolean updated = false;
         if (isArchived != null && conversation.isArchived() != isArchived) {
-            conversationRepository.updateArchivedStatus(conversationId, isArchived);
+            // Pass userId and unbox Boolean to boolean
+            conversationRepository.updateArchivedStatus(conversationId, userId, isArchived);
             conversation.setArchived(isArchived);
             updated = true;
         }
         if (isMuted != null && conversation.isMuted() != isMuted) {
-            conversationRepository.updateMutedStatus(conversationId, isMuted);
+            // Pass userId and unbox Boolean to boolean
+            conversationRepository.updateMutedStatus(conversationId, userId, isMuted);
             conversation.setMuted(isMuted);
             updated = true;
         }
         if (isPinned != null && conversation.isPinned() != isPinned) {
-            conversationRepository.updatePinnedStatus(conversationId, isPinned);
+            // Pass userId and unbox Boolean to boolean
+            conversationRepository.updatePinnedStatus(conversationId, userId, isPinned);
             conversation.setPinned(isPinned);
             updated = true;
         }
         if (updated) {
-            conversation.setUpdatedAt(Instant.now()); // Manually update timestamp if flags changed
-            // conversationRepository.save(conversation); // Or rely on individual update methods to touch updated_at
+            // Consider if the repository 'update' methods should also update the 'updated_at' timestamp.
+            // If not, setting it here is appropriate.
+            conversation.setUpdatedAt(Instant.now());
+            // We've updated parts of the conversation state.
+            // The individual repository update methods handle DB persistence for flags.
+            // If other parts of 'conversation' object itself need saving, uncomment next line.
+            // conversationRepository.save(conversation);
         }
         return Optional.of(conversation);
     }
 
     /**
      * Deletes a conversation.
+     * Note: The underlying repository method `deleteById` returns void.
+     * This service method returns true if the operation is attempted without exceptions,
+     * not necessarily confirming a row was deleted.
      * @param conversationId The ID of the conversation to delete.
-     * @return true if successful.
+     * @return true if the delete operation was called without error.
      */
     @Transactional
     public boolean deleteConversation(String conversationId) {
         logger.info("ConversationService.deleteConversation called for id: {}", conversationId);
         // Business logic before deleting (e.g., notify users, archive instead of delete)
-        // The ON DELETE CASCADE on messages.conversation_id will handle message deletion.
-        return conversationRepository.deleteById(conversationId);
+        try {
+            conversationRepository.deleteById(conversationId);
+            // If deleteById throws an exception (e.g., DataAccessException), it won't reach here.
+            return true;
+        } catch (Exception e) {
+            logger.error("Error deleting conversation with id: {}", conversationId, e);
+            return false;
+        }
     }
 }
-
