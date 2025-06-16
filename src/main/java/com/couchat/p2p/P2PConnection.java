@@ -68,8 +68,14 @@ public class P2PConnection implements Runnable {
         this.localPeerId = localPeerId;
         this.peerId = peerId;
         this.socket = socket;
-        this.inputStream = socket.getInputStream();
-        this.outputStream = socket.getOutputStream();
+        if (socket != null) { // Check if socket is not null before getting streams
+            this.inputStream = socket.getInputStream();
+            this.outputStream = socket.getOutputStream();
+        } else {
+            // For Placeholder or other scenarios where socket might be null initially
+            this.inputStream = null;
+            this.outputStream = null;
+        }
         this.connectionManager = connectionManager;
         this.encryptionService = encryptionService;
         this.messageService = messageService;
@@ -357,7 +363,7 @@ public class P2PConnection implements Runnable {
          * @throws IOException if the super constructor throws it (though unlikely with null socket).
          */
         public Placeholder(String peerId) throws IOException {
-            super(null, peerId, null, null, null, null, null);
+            super(null, peerId, null, null, null, null, null); // Pass null for socket and other services
             this.placeholderPeerId = peerId;
             logger.debug("P2PConnection.Placeholder created for peer: {}", peerId);
         }

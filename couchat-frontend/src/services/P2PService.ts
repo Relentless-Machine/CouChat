@@ -1,5 +1,5 @@
 // filepath: F:\Git\CouChat\couchat-frontend\src\services\P2PService.ts
-import { API_BASE_URL } from '../config'; // Assuming you have a config file for API base URL
+import { API_BASE_URL_P2P } from '../config'; // Corrected to use API_BASE_URL_P2P
 
 /**
  * Attempts to initiate a P2P connection with the specified peer.
@@ -10,7 +10,8 @@ import { API_BASE_URL } from '../config'; // Assuming you have a config file for
 export const connectToPeer = async (peerId: string): Promise<string> => {
   console.log(`P2PService: Attempting to connect to peer: ${peerId}`);
   try {
-    const response = await fetch(`${API_BASE_URL}/api/p2p/connect/${peerId}`, {
+    // Corrected URL: API_BASE_URL_P2P already includes /api/p2p
+    const response = await fetch(`${API_BASE_URL_P2P}/connect/${peerId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -50,7 +51,8 @@ export interface DiscoveredPeer {
 export const getDiscoveredPeers = async (): Promise<DiscoveredPeer[]> => {
   console.log('P2PService: Fetching discovered peers...');
   try {
-    const response = await fetch(`${API_BASE_URL}/api/p2p/discovered-peers`, {
+    // Corrected URL: API_BASE_URL_P2P already includes /api/p2p
+    const response = await fetch(`${API_BASE_URL_P2P}/discovered-peers`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -72,4 +74,3 @@ export const getDiscoveredPeers = async (): Promise<DiscoveredPeer[]> => {
     throw error;
   }
 };
-

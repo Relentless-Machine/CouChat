@@ -6,12 +6,24 @@
         </encoder>
     </appender>
 
+    <!-- File Appender that uses LOG_PATH set by Spring Boot via -Dlogging.file.path -->
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <!-- path is ${LOG_PATH}/spring.log by default if LOG_PATH is set -->
+        <!-- Spring Boot sets LOG_PATH from logging.file.path system property -->
+        <file>${LOG_PATH:-./logs}/spring.log</file> <!-- Default to ./logs if LOG_PATH is not set -->
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
     <!-- Logger for ice4j -->
     <logger name="org.ice4j" level="TRACE" additivity="false">
         <appender-ref ref="CONSOLE" />
+        <appender-ref ref="FILE" /> <!-- Add FILE appender to ice4j logger -->
     </logger>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE" />
+        <appender-ref ref="FILE" /> <!-- Add FILE appender to root logger -->
     </root>
 </configuration>

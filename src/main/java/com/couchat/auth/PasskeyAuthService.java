@@ -4,9 +4,12 @@ import com.couchat.device.model.Device;
 import com.couchat.repository.DeviceRepository;
 import com.couchat.user.model.User;
 import com.couchat.repository.UserRepository;
+import com.couchat.p2p.DeviceDiscoveryService;
+import com.couchat.p2p.P2PConnectionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy; // Import @Lazy
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
@@ -33,6 +36,8 @@ public class PasskeyAuthService {
 
     private final DeviceRepository deviceRepository;
     private final UserRepository userRepository; // Keep for registration/login logic
+    private final DeviceDiscoveryService deviceDiscoveryService;
+    private final P2PConnectionManager p2pConnectionManager;
 
     private static final String CONFIG_DIR_NAME = ".couchat";
     private static final String DEVICE_PROPERTIES_FILE_NAME = "device.properties";
@@ -43,9 +48,15 @@ public class PasskeyAuthService {
     private boolean authenticated = false;
 
     @Autowired
-    public PasskeyAuthService(DeviceRepository deviceRepository, UserRepository userRepository) {
+    public PasskeyAuthService(DeviceRepository deviceRepository,
+                              UserRepository userRepository,
+                              @Lazy DeviceDiscoveryService deviceDiscoveryService, // Added @Lazy
+                              @Lazy P2PConnectionManager p2pConnectionManager    // Added @Lazy
+                              ) {
         this.deviceRepository = deviceRepository;
         this.userRepository = userRepository;
+        this.deviceDiscoveryService = deviceDiscoveryService;
+        this.p2pConnectionManager = p2pConnectionManager;
     }
 
     @PostConstruct
@@ -61,15 +72,35 @@ public class PasskeyAuthService {
                 this.localUserId = device.getUserId();
                 this.authenticated = true; // Mark as authenticated if device and user are found
                 logger.info("Device {} successfully authenticated for user ID: {}.", this.currentDeviceId, this.localUserId);
+                triggerP2PServiceInitialization();
             } else {
                 logger.warn("Device ID {} found locally, but no matching device found in the database. Device may need to be re-registered.", this.currentDeviceId);
-                // Optionally, clear the local device ID if it's invalid
+                // Optionally, clear the local device ID if it\'s invalid
                 // clearLocalDeviceId();
                 this.authenticated = false;
             }
         } else {
             logger.info("No local device ID found. Device needs to be registered or user needs to log in to associate this device.");
             this.authenticated = false;
+        }
+    }
+
+    private void triggerP2PServiceInitialization() {
+        if (this.authenticated && this.localUserId != null) {
+            logger.info("Attempting to trigger P2P service initialization...");
+            if (p2pConnectionManager != null) {
+                p2pConnectionManager.startListening(); // Start this first to establish the port
+            } else {
+                logger.warn("P2PConnectionManager is null, cannot trigger startListening.");
+            }
+            if (deviceDiscoveryService != null) {
+                // P2PConnectionManager should have set the port on DeviceDiscoveryService by now
+                deviceDiscoveryService.startDiscovery();
+            } else {
+                logger.warn("DeviceDiscoveryService is null, cannot trigger startDiscovery.");
+            }
+        } else {
+            logger.warn("Attempted to trigger P2P services but not fully authenticated or localUserId is null.");
         }
     }
 
@@ -167,16 +198,11 @@ public class PasskeyAuthService {
             logger.warn("Registration attempt with empty username.");
             return Optional.empty();
         }
+        // Prevent re-registration if already authenticated with a device ID.
+        // A more robust flow might involve logout or explicit device re-association.
         if (this.authenticated && this.currentDeviceId != null) {
-            // This case means a device ID is already loaded and authenticated.
-            // Re-registration might mean creating a new user for an already identified device,
-            // or it might be an error. For now, let's assume a new user means this device
-            // should be associated with that new user, potentially overwriting old association
-            // if the UI flow allows it. Or, more simply, disallow if already authenticated.
-            logger.warn("Registration attempt on an already authenticated device ({}). Current user: {}. This flow needs clarification.", this.currentDeviceId, this.localUserId);
-            // For now, let's prevent re-registration if already authenticated to avoid complexity.
-            // A proper flow would involve logging out or explicit re-association.
-             return Optional.empty(); // Or throw exception
+            logger.warn("Registration attempt on an already authenticated device ({}). Current user: {}. Please log out or use a different mechanism to associate a new user.", this.currentDeviceId, this.localUserId);
+            return Optional.empty();
         }
 
         if (userRepository.findByUsername(username).isPresent()) {
@@ -185,22 +211,21 @@ public class PasskeyAuthService {
         }
 
         User newUser = new User(username.trim()); // Constructor generates userId
-        // In a real Passkey flow, password_hash might not be used directly.
-        // newUser.setPasswordHash(...); // If using passwords
         userRepository.save(newUser);
         logger.info("New user {} registered with ID: {}", newUser.getUsername(), newUser.getUserId());
 
         Device newDevice = new Device(newUser.getUserId(), deviceName != null ? deviceName : "My Device");
-        // In a real Passkey flow, passkey_credential_id etc. would be set here after WebAuthn ceremony
         deviceRepository.save(newDevice);
         logger.info("New device {} registered for user {} with name: {}", newDevice.getDeviceId(), newUser.getUserId(), newDevice.getDeviceName());
-
-        saveLocalDeviceId(newDevice.getDeviceId());
 
         // Update current service state
         this.localUserId = newUser.getUserId();
         this.currentDeviceId = newDevice.getDeviceId();
         this.authenticated = true;
+        saveLocalDeviceId(newDevice.getDeviceId()); // Save device ID locally
+
+        logger.info("User {} registered and device {} associated. Triggering P2P services.", newUser.getUsername(), newDevice.getDeviceId());
+        triggerP2PServiceInitialization(); // Call new method
 
         return Optional.of(newUser);
     }

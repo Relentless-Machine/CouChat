@@ -2,7 +2,7 @@ package com.couchat.transfer.controller;
 
 import com.couchat.auth.PasskeyAuthService;
 import com.couchat.transfer.model.FileTransfer;
-import com.couchat.transfer.service.FileTransferService;
+import com.couchat.transfer.FileTransferService; // Corrected import
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -32,53 +33,43 @@ public class FileTransferController {
     }
 
     /**
-     * Placeholder for initiating a file upload.
-     * In a real app, this would handle receiving file metadata, creating a FileTransfer record,
-     * and then subsequent requests would handle chunks.
+     * Initiates a P2P file transfer request from the current user to a recipient.
+     * The actual file data is transferred directly via P2P, not through this HTTP request.
      *
-     * @param file The multipart file (not fully handled in this stub).
-     * @param messageId The ID of the FILE_INFO message this transfer relates to.
-     * @return A FileTransfer record.
+     * @param recipientId The ID of the user to send the file to.
+     * @param localFilePath The absolute path of the file on the sender's local system.
+     * @return A ResponseEntity containing the fileId if successful, or an error status.
      */
-    @PostMapping("/upload")
-    public ResponseEntity<FileTransfer> initiateFileUpload(
-            @RequestParam("file") MultipartFile file, // Spring MVC for file uploads
-            @RequestParam("messageId") String messageId,
-            @RequestParam("fileName") String fileName,
-            @RequestParam("fileSize") long fileSize,
-            @RequestParam("mimeType") String mimeType) {
+    @PostMapping("/request-transfer")
+    public ResponseEntity<Map<String, String>> requestP2PFileTransfer(
+            @RequestParam("recipientId") String recipientId,
+            @RequestParam("localFilePath") String localFilePath) {
         String currentUserId = passkeyAuthService.getLocalUserId();
         if (currentUserId == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        logger.info("POST /api/files/upload - initiateFileUpload called by user: {} for messageId: {}", currentUserId, messageId);
-        logger.info("File details: name={}, size={}, type={}", fileName, fileSize, mimeType);
+        logger.info("POST /api/files/request-transfer - User {} requesting to send file '{}' to recipient {}",
+                currentUserId, localFilePath, recipientId);
 
-        if (file.isEmpty()) {
-            logger.warn("File upload attempt with empty file.");
-            return ResponseEntity.badRequest().build();
+        if (recipientId == null || recipientId.isEmpty() || localFilePath == null || localFilePath.isEmpty()) {
+            logger.warn("Recipient ID or local file path is missing.");
+            return ResponseEntity.badRequest().body(Map.of("error", "Recipient ID and local file path are required."));
         }
 
         try {
-            // 1. Create FileTransfer object
-            FileTransfer newFileTransfer = new FileTransfer(messageId, fileName, fileSize, mimeType);
-            // In a real scenario, you might save the file to a temporary location first
-            // and then update the localPath in FileTransfer object.
-            // String tempPath = saveFileTemporarily(file, newFileTransfer.getFileId());
-            // newFileTransfer.setLocalPath(tempPath);
+            String fileId = fileTransferService.initiateFileTransfer(recipientId, localFilePath);
 
-            FileTransfer initiatedTransfer = fileTransferService.initiateFileTransfer(newFileTransfer);
-
-            // TODO: The actual file bytes from MultipartFile need to be streamed/processed.
-            // This endpoint is just for creating the record.
-            // The client would then send a FILE_INFO message, and upon acceptance, start sending chunks.
-
-            logger.info("File transfer record created: {}", initiatedTransfer.getFileId());
-            return ResponseEntity.status(HttpStatus.CREATED).body(initiatedTransfer);
+            if (fileId != null) {
+                logger.info("P2P File transfer initiated. File ID: {}", fileId);
+                return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("fileId", fileId, "status", "Transfer initiated, awaiting recipient acceptance."));
+            } else {
+                logger.error("Failed to initiate P2P file transfer from user {} to {}. File: {}", currentUserId, recipientId, localFilePath);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Failed to initiate P2P file transfer."));
+            }
         } catch (Exception e) {
-            logger.error("Error initiating file upload for messageId {}: {}", messageId, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            logger.error("Error during P2P file transfer initiation for user {} to {}: {}", currentUserId, recipientId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Internal server error: " + e.getMessage()));
         }
     }
 
@@ -108,13 +99,19 @@ public class FileTransferController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         logger.info("POST /api/files/{}/accept - called by user {}", fileId, currentUserId);
+
         // TODO: Validate that currentUserId is the intended recipient of this file transfer.
-        boolean success = fileTransferService.updateTransferStatus(fileId, FileTransfer.FileTransferStatus.ACCEPTED);
+        // This might involve checking the IncomingFileTransfer object in FileTransferService.
+
+        boolean success = fileTransferService.acceptIncomingTransfer(fileId);
         if (success) {
-            // TODO: Notify sender to start sending chunks.
+            logger.info("File transfer {} accepted by user {}", fileId, currentUserId);
             return ResponseEntity.ok().build();
+        } else {
+            logger.warn("Failed to accept file transfer {} for user {}", fileId, currentUserId);
+            // Consider returning more specific error (e.g., NOT_FOUND if transfer doesn't exist, or FORBIDDEN if not recipient)
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build(); // Or not found, or bad request
     }
 
     /**
@@ -129,17 +126,20 @@ public class FileTransferController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         logger.info("POST /api/files/{}/reject - called by user {}", fileId, currentUserId);
+
         // TODO: Validate that currentUserId is the intended recipient.
-        boolean success = fileTransferService.updateTransferStatus(fileId, FileTransfer.FileTransferStatus.REJECTED);
-         if (success) {
-            // TODO: Notify sender about rejection.
+
+        boolean success = fileTransferService.rejectIncomingTransfer(fileId);
+        if (success) {
+            logger.info("File transfer {} rejected by user {}", fileId, currentUserId);
             return ResponseEntity.ok().build();
+        } else {
+            logger.warn("Failed to reject file transfer {} for user {}", fileId, currentUserId);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
     }
 
     // TODO: Add endpoints for actual chunk upload/download if using HTTP for that (not typical for P2P focus)
     // TODO: Add endpoint for cancelling a transfer
 
 }
-

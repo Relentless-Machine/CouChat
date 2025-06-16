@@ -1,17 +1,28 @@
 // src/pages/ChatPage.tsx
-import React, { useState, ChangeEvent, FormEvent, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import UserDiscoveryPanel from '../components/UserDiscoveryPanel';
-import { DiscoveredPeer } from '../services/P2PService';
+import type { DiscoveredPeer } from '../services/P2PService';
 import {
-  Message, // Correctly imported
-  MessageType, // Correctly imported
-  MessageStatus, // Import if needed for optimistic updates, already used in optimisticMessage
+  MessageType,
+  MessageStatus,
   sendMessage as sendMessageAPI,
   getMessagesByConversationIdAPI,
   markConversationAsReadAPI,
 } from '../services/MessageService';
+import type { Message, SendMessageDTO } from '../services/MessageService';
+
+// Helper function to determine a canonical conversation ID
+const determineP2PConversationId = (userId1: string, userId2: string): string => {
+  if (!userId1 || !userId2) {
+    console.error("User ID is null or empty for determining P2P conversation ID. User1:", userId1, "User2:", userId2);
+    return `p2p_error_invalid_ids_${Date.now()}`;
+  }
+  const ids = [userId1, userId2].sort();
+  return `p2p_${ids[0]}_${ids[1]}`;
+};
 
 const ChatPage: React.FC = () => {
   const { logout, currentUser } = useAuth();
@@ -25,6 +36,7 @@ const ChatPage: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
   const [chatError, setChatError] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null); // State for the message being replied to
+  const [activeP2PConversationId, setActiveP2PConversationId] = useState<string | null>(null); // New state for canonical conversation ID
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -33,24 +45,12 @@ const ChatPage: React.FC = () => {
     }
   }, [messages]);
 
-  // const addMessageToList = (text: string, sender: Message['sender']) => { // This function is no longer used directly for adding chat messages
-  //   setMessages(prevMessages => [
-  //     ...prevMessages,
-  //     {
-  //       id: Date.now().toString() + Math.random().toString(36).substring(2, 7),
-  //       text,
-  //       sender,
-  //       timestamp: new Date(),
-  //     },
-  //   ]);
-  // };
-
-  const addSystemMessage = (text: string, systemMessageType: 'system-info' | 'system-error') => {
+  const addSystemMessage = (text: string, _systemMessageType: 'system-info' | 'system-error') => {
     setMessages(prevMessages => [
       ...prevMessages,
       {
         id: `sys-${Date.now()}`,
-        conversationId: currentChatPeer?.peerId || 'system',
+        conversationId: activeP2PConversationId || currentChatPeer?.peerId || 'system', // Decide which ID to use for system messages
         senderId: 'system',
         recipientId: currentUser?.userId || 'system',
         payload: text,
@@ -83,71 +83,107 @@ const ChatPage: React.FC = () => {
     setReplyingToMessage(null);
   };
 
-  // Fetch messages when currentChatPeer changes
-  const fetchMessages = useCallback(async () => {
-    if (!currentChatPeer || !currentUser) return;
-    const conversationId = currentChatPeer.peerId;
-    console.log(`ChatPage: Fetching messages for conversation with ${conversationId}`);
-    try {
-      const fetchedMessages = await getMessagesByConversationIdAPI(conversationId);
-      // MessageService now ensures timestamp is a Date object.
-      setMessages(fetchedMessages);
-      markConversationAsReadAPI(conversationId).catch(err => console.error("Failed to mark conversation as read", err));
-    } catch (error) {
-      console.error('ChatPage: Error fetching messages:', error);
-      setChatError('Failed to load messages.');
-      addSystemMessage('Error fetching messages.', 'system-error');
+  // Update activeP2PConversationId when currentUser or currentChatPeer changes
+  useEffect(() => {
+    if (currentUser && currentChatPeer) {
+      const newConversationId = determineP2PConversationId(currentUser.userId, currentChatPeer.peerId);
+      setActiveP2PConversationId(newConversationId);
+      console.log(`ChatPage: Set activeP2PConversationId to: ${newConversationId}`);
+    } else {
+      setActiveP2PConversationId(null); // Clear if no user or peer
     }
-  }, [currentChatPeer, currentUser]);
+  }, [currentUser, currentChatPeer]);
+
+  // Fetch messages when activeP2PConversationId changes
+  const fetchMessages = useCallback(async () => {
+    if (!activeP2PConversationId || !currentUser) {
+        console.log("ChatPage: Skipping fetchMessages. No activeP2PConversationId or currentUser.", "ActiveID:", activeP2PConversationId, "User:", currentUser);
+        return;
+    }
+    console.log(`ChatPage: Fetching messages for canonical conversation ID: ${activeP2PConversationId}`);
+    try {
+      const fetchedMessages = await getMessagesByConversationIdAPI(activeP2PConversationId);
+      // Assuming API returns messages sorted newest-first.
+      // Reverse to display oldest-first, so newest appears at the bottom of the chat.
+      setMessages(fetchedMessages.slice().reverse());
+      markConversationAsReadAPI(activeP2PConversationId).catch(err => console.error("Failed to mark conversation as read for", activeP2PConversationId, err));
+    } catch (error) {
+      console.error('ChatPage: Error fetching messages for ', activeP2PConversationId, error);
+      setChatError('Failed to load messages.');
+      // addSystemMessage('Error fetching messages.', 'system-error'); // Consider if system message should use peerId or canonicalId
+    }
+  }, [activeP2PConversationId, currentUser]);
 
   useEffect(() => {
-    if (currentChatPeer) {
+    if (activeP2PConversationId) {
       fetchMessages();
-      // Setup interval to poll for new messages
-      const intervalId = setInterval(fetchMessages, 3000); // Poll every 3 seconds
-      return () => clearInterval(intervalId); // Cleanup interval
+      const intervalId = setInterval(fetchMessages, 3000);
+      return () => clearInterval(intervalId);
     } else {
-      setMessages([]); // Clear messages if no peer is selected
+      setMessages([]);
     }
-  }, [currentChatPeer, fetchMessages]);
+  }, [activeP2PConversationId, fetchMessages]);
 
   const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (currentMessage.trim() === '' || isSending || !currentChatPeer || !currentUser) {
+    console.log('ChatPage: handleSendMessage triggered.');
+
+    if (currentMessage.trim() === '' || isSending || !currentChatPeer || !currentUser || !activeP2PConversationId) {
+      console.warn('ChatPage: Send message validation failed. Conditions:');
+      console.warn(`  - currentMessage.trim() === '': ${currentMessage.trim() === ''}`);
+      console.warn(`  - isSending: ${isSending}`);
+      console.warn(`  - !currentChatPeer: ${!currentChatPeer}`);
+      console.warn(`  - !currentUser: ${!currentUser}`);
+      console.warn(`  - !activeP2PConversationId: ${!activeP2PConversationId}`);
       if (!currentChatPeer) addSystemMessage('No user selected to chat with.', 'system-error');
+      if (!currentUser) console.warn('ChatPage: Send message aborted. No currentUser.');
+      if (isSending) console.warn('ChatPage: Send message aborted. Already sending.');
+      if (currentMessage.trim() === '') console.warn('ChatPage: Send message aborted. Message is empty.');
+      if (!activeP2PConversationId) console.warn('ChatPage: Send message aborted. No activeP2PConversationId.');
       return;
     }
 
+    console.log('ChatPage: Passed initial validation. Proceeding to send.');
     setIsSending(true);
     const textToSend = currentMessage;
     setCurrentMessage('');
 
+    // Double check, though validation above should catch it.
+    if (!currentUser || !currentChatPeer || !activeP2PConversationId) {
+        console.error("ChatPage: Critical error - currentUser, currentChatPeer, or activeP2PConversationId is null before sending optimistic message.");
+        addSystemMessage('Critical error: User, Peer or Conversation context lost.', 'system-error');
+        setIsSending(false);
+        return;
+    }
+
     const optimisticMessage: Message = {
       id: `temp-${Date.now()}`,
-      conversationId: currentChatPeer.peerId,
+      conversationId: activeP2PConversationId, // Use canonical ID
       senderId: currentUser.userId,
-      recipientId: currentChatPeer.peerId,
+      recipientId: currentChatPeer.peerId, // Recipient ID remains the peer's specific ID
       payload: textToSend,
       type: MessageType.TEXT,
       timestamp: new Date(),
       status: MessageStatus.SENT,
-      originalMessageId: replyingToMessage ? replyingToMessage.id : null, // Add originalMessageId if replying
+      originalMessageId: replyingToMessage ? replyingToMessage.id : null,
     };
     setMessages(prevMessages => [...prevMessages, optimisticMessage]);
 
-    // Clear the replyingToMessage state after constructing the optimistic message
     if (replyingToMessage) {
       setReplyingToMessage(null);
     }
 
     try {
-      const sentMessage = await sendMessageAPI({
-        conversationId: currentChatPeer.peerId,
-        recipientId: currentChatPeer.peerId,
+      const messageDto: SendMessageDTO = {
+        conversationId: activeP2PConversationId, // Use canonical ID
+        recipientId: currentChatPeer.peerId,    // Recipient ID remains the peer's specific ID
         type: MessageType.TEXT,
         payload: textToSend,
-        originalMessageId: optimisticMessage.originalMessageId, // Pass it to the API
-      });
+        originalMessageId: optimisticMessage.originalMessageId,
+      };
+      console.log('ChatPage: Attempting to call sendMessageAPI with DTO:', messageDto);
+      const sentMessage = await sendMessageAPI(messageDto);
+      console.log('ChatPage: sendMessageAPI successful. Response:', sentMessage);
       setMessages(prevMessages =>
         prevMessages.map(msg => (msg.id === optimisticMessage.id ? { ...sentMessage, timestamp: new Date(sentMessage.timestamp) } : msg))
       );
@@ -158,18 +194,18 @@ const ChatPage: React.FC = () => {
       }
       console.error('ChatPage: Message sending error', error);
       addSystemMessage(`Error sending message: ${errorMessage}`, 'system-error');
-      // Optionally, mark the optimistic message as failed
       setMessages(prevMessages =>
-        prevMessages.map(msg => (msg.id === optimisticMessage.id ? { ...msg, status: MessageStatus.FAILED } : msg)) // Use Enum
+        prevMessages.map(msg => (msg.id === optimisticMessage.id ? { ...msg, status: MessageStatus.FAILED } : msg))
       );
     } finally {
       setIsSending(false);
+      console.log('ChatPage: handleSendMessage finished.');
     }
   };
 
   const getSenderDisplayName = (senderId: string): string => {
-    if (senderId === currentUser?.userId) return "You";
-    if (senderId === currentChatPeer?.peerId) return currentChatPeer.username || currentChatPeer.peerId; // Display username if available
+    if (currentUser && senderId === currentUser.userId) return "You";
+    if (currentChatPeer && senderId === currentChatPeer.peerId) return currentChatPeer.username || currentChatPeer.peerId;
     if (senderId === 'system') return "System";
     return senderId; // Fallback to senderId
   };
@@ -178,7 +214,6 @@ const ChatPage: React.FC = () => {
     if (message.senderId === 'system') {
       return {
         textAlign: 'center' as const,
-        // Assuming system messages might have a different type for errors, though current addSystemMessage uses MessageType.SYSTEM
         background: message.payload.toLowerCase().includes('error') || message.payload.toLowerCase().includes('failed') ? '#fdd' : '#e0e0e0',
         color: message.payload.toLowerCase().includes('error') || message.payload.toLowerCase().includes('failed') ? 'red' : '#555',
         fontStyle: 'italic' as const,
@@ -196,10 +231,6 @@ const ChatPage: React.FC = () => {
     console.log('ChatPage: Peer selected for chat:', peer);
     // Connection is now initiated by UserDiscoveryPanel's connect button
     // We just set the peer here if connection was successful (handled by onConnectionSuccess)
-    // setCurrentChatPeer(peer);
-    // setConnectionStatus(`Connecting to ${peer.peerId}...`);
-    // setMessages([]); // Clear previous chat messages
-    // setChatError(null);
   };
 
   const handleConnectionAttempt = (peerId: string) => {
@@ -209,10 +240,10 @@ const ChatPage: React.FC = () => {
     setMessages([]);
   };
 
-  const handleConnectionSuccess = (peer: DiscoveredPeer, message: string) => { // Changed peerId to peer: DiscoveredPeer
+  const handleConnectionSuccess = (peer: DiscoveredPeer, message: string) => { // Parameter name reverted to 'message'
     setConnectionStatus(`Connected to ${peer.peerId}. ${message}`);
     addSystemMessage(`Successfully connected to ${peer.peerId}. ${message}`, 'system-info');
-    setCurrentChatPeer(peer); // Use the full DiscoveredPeer object passed from UserDiscoveryPanel
+    setCurrentChatPeer(peer);
   };
 
   const handleConnectionError = (peerId: string, errorMessage: string) => {
@@ -227,7 +258,7 @@ const ChatPage: React.FC = () => {
       <div style={{ width: '300px', borderRight: '1px solid #ccc', padding: '10px', overflowY: 'auto' }}>
         <h2 style={{ marginTop: 0 }}>Discover Users</h2>
         <UserDiscoveryPanel
-          onSelectPeer={handleSelectPeer} // This might be redundant if connection handles selection
+          onSelectPeer={handleSelectPeer}
           currentChatPeerId={currentChatPeer?.peerId}
           onConnectionAttempt={handleConnectionAttempt}
           onConnectionSuccess={handleConnectionSuccess}
@@ -268,23 +299,36 @@ const ChatPage: React.FC = () => {
             const styles = getMessageStyle(msg);
             const displayName = getSenderDisplayName(msg.senderId);
             const isSystemMessage = msg.senderId === 'system';
-            const isMyMessage = msg.senderId === currentUser?.userId;
 
-            // Find the original message if this is a reply
             let originalMsgDisplay = null;
             if (msg.originalMessageId) {
               const original = messages.find(m => m.id === msg.originalMessageId);
               if (original) {
+                const isOriginalFromCurrentUser = original.senderId === currentUser?.userId;
                 originalMsgDisplay = (
                   <div style={{
                     fontSize: '0.8em',
                     padding: '5px 8px',
-                    background: styles.textAlign === 'right' ? '#cce5ff' : '#e9e9e9',
+                    background: isOriginalFromCurrentUser ? 'rgba(220, 248, 198, 0.7)' : 'rgba(225, 225, 225, 0.7)',
                     borderRadius: '5px',
                     marginBottom: '4px',
-                    borderLeft: `3px solid ${styles.textAlign === 'right' ? '#99c2ff' : '#ccc'}`,
-                    opacity: 0.8
-                  }}>
+                    borderLeft: `3px solid ${isOriginalFromCurrentUser ? '#a7d78f' : '#c0c0c0'}`,
+                    opacity: 0.9,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    const originalMessageElement = document.getElementById(`msg-${original.id}`);
+                    if (originalMessageElement) {
+                      originalMessageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      originalMessageElement.style.transition = 'background-color 0.2s ease-out';
+                      originalMessageElement.style.backgroundColor = '#fffacd'; // LemonChiffon for highlight
+                      setTimeout(() => {
+                        originalMessageElement.style.backgroundColor = ''; // Reset background
+                      }, 1500);
+                    }
+                  }}
+                  title="Scroll to original message"
+                  >
                     <strong>{getSenderDisplayName(original.senderId)}:</strong>
                     <span style={{ marginLeft: '5px', fontStyle: 'italic' }}>
                       {original.payload.length > 60 ? original.payload.substring(0, 57) + '...' : original.payload}
@@ -295,12 +339,16 @@ const ChatPage: React.FC = () => {
             }
 
             return (
-              <div key={msg.id} style={{ marginBottom: '8px', display: 'flex', justifyContent: styles.textAlign === 'right' ? 'flex-end' : (styles.textAlign === 'center' ? 'center' : 'flex-start') }}>
+              <div key={msg.id} id={`msg-${msg.id}`} style={{ marginBottom: '8px', display: 'flex', justifyContent: styles.textAlign === 'right' ? 'flex-end' : (styles.textAlign === 'center' ? 'center' : 'flex-start') }}>
                 <div style={{ maxWidth: '70%', display: 'flex', flexDirection: styles.textAlign === 'right' ? 'row-reverse' : 'row', alignItems: 'flex-end' }}>
-                  <div style={{ /* This div now wraps the message bubble and the potential replied message quote */
+                  <div style={{
                     order: styles.textAlign === 'right' ? 1 : 0,
+                    alignSelf: styles.textAlign === 'right' ? 'flex-end' : 'flex-start',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: styles.textAlign === 'right' ? 'flex-end' : 'flex-start',
                   }}>
-                    {originalMsgDisplay} {/* Display the original message quote if it exists */}
+                    {originalMsgDisplay}
                     <span style={{
                       background: styles.background,
                       color: styles.color,
@@ -309,12 +357,12 @@ const ChatPage: React.FC = () => {
                       borderRadius: '10px',
                       display: 'inline-block',
                       wordBreak: 'break-word',
-                      order: styles.textAlign === 'right' ? 1 : 0, // Ensures message bubble is on the correct side of reply button for user messages
+                      order: styles.textAlign === 'right' ? 1 : 0,
                     }}>
                       <div style={{ fontSize: '0.8em', color: '#555', marginBottom: '2px', textAlign: styles.textAlign === 'right' ? 'right' : 'left'}}>
                         {displayName}
                       </div>
-                      {msg.payload} {/* Changed from msg.text to msg.payload */}
+                      {msg.payload}
                       <div style={{ fontSize: '0.7em', color: styles.color === 'red' ? 'darkred' : '#777', marginTop: '3px', textAlign: 'right' }}>
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         {msg.status === MessageStatus.SENT && ' ✓'}
@@ -335,8 +383,8 @@ const ChatPage: React.FC = () => {
                           border: '1px solid #ccc',
                           borderRadius: '4px',
                           background: '#f0f0f0',
-                          order: styles.textAlign === 'right' ? 0 : 1, // Ensures reply button is on the correct side
-                          alignSelf: 'center', // Vertically center the button a bit better
+                          order: styles.textAlign === 'right' ? 0 : 1,
+                          alignSelf: 'center',
                         }}
                         title="Reply to this message"
                       >
@@ -391,7 +439,7 @@ const ChatPage: React.FC = () => {
         {/* Message Input Form */}
         <form onSubmit={handleSendMessage} style={{ display: 'flex', marginTop: 'auto' }}>
           <input
-            id="chat-message-input" // Added ID for focusing
+            id="chat-message-input"
             type="text"
             value={currentMessage}
             onChange={handleInputChange}

@@ -19,7 +19,8 @@ import java.util.Optional;
 public class AuthenticationManager implements AuthenticationInterface {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthenticationManager.class);
-    private static final String DB_URL = "jdbc:sqlite:couchat_storage.db";
+    // CRITICAL CHANGE: Use a separate database file to avoid conflicts with the main application
+    private static final String DB_URL = "jdbc:sqlite:auth_manager_standalone.db";
 
     // In-memory store for logged-in user sessions (username -> isLoggedIn)
     // For a real application, this should be replaced with a more robust session management mechanism.
@@ -243,7 +244,9 @@ public class AuthenticationManager implements AuthenticationInterface {
      */
     @Override
     public void bindDevicePasskey(String deviceId, String passkey) {
-        logger.debug("Attempting to bind device passkey for device: {}", deviceId);
+        logger.debug("Attempting to bind device passkey for device: {} with passkey (first 5 chars): {}",
+                     deviceId, (passkey != null && passkey.length() > 5) ? passkey.substring(0, 5) + "..." : passkey);
+
         if (deviceId == null || deviceId.trim().isEmpty() ||
             passkey == null || passkey.trim().isEmpty()) {
             logger.warn("Cannot bind device passkey: deviceId or passkey is null or empty.");
@@ -265,6 +268,7 @@ public class AuthenticationManager implements AuthenticationInterface {
         int userId = userIdOpt.get();
 
         String passkeyHash = hashPassword(passkey);
+        logger.debug("Generated passkeyHash: {} for deviceId: {}", passkeyHash, deviceId);
         if (passkeyHash == null) {
             logger.error("Cannot bind device passkey for device '{}': Passkey hashing failed.", deviceId);
             return;
@@ -277,15 +281,13 @@ public class AuthenticationManager implements AuthenticationInterface {
              PreparedStatement stmt = conn.prepareStatement(upsertSql)) {
             stmt.setString(1, deviceId);
             stmt.setInt(2, userId);
-            stmt.setString(3, passkeyHash);
+            stmt.setString(3, passkeyHash); // Log value being set
+            logger.debug("Executing UPSERT for deviceId: {} with userId: {}, passkeyHash: {}", deviceId, userId, passkeyHash);
             int affectedRows = stmt.executeUpdate();
             if (affectedRows > 0) {
-                 logger.info("Successfully bound/updated passkey for device '{}' to user '{}' (ID: {}).", deviceId, loggedInUsername, userId);
+                 logger.info("Successfully bound/updated passkey for device '{}' to user '{}' (ID: {}). Affected rows: {}", deviceId, loggedInUsername, userId, affectedRows);
             } else {
-                // This case might not be reached with ON CONFLICT DO UPDATE if the device_id exists,
-                // as it would update. If it doesn't exist, it inserts.
-                // A 0 affectedRows might indicate an issue if the insert/update was expected but didn't happen.
-                logger.warn("Binding/updating passkey for device '{}' resulted in 0 affected rows. Check DB state or SQL logic.", deviceId);
+                logger.warn("Binding/updating passkey for device '{}' resulted in 0 affected rows. SQL executed with passkeyHash: {}. Check DB state or SQL logic.", deviceId, passkeyHash);
             }
         } catch (SQLException e) {
             logger.error("Database error binding device passkey for device: {}", deviceId, e);
@@ -317,19 +319,22 @@ public class AuthenticationManager implements AuthenticationInterface {
             return null;
         }
         String sql = "SELECT passkey_hash FROM devices WHERE device_id = ?";
+        String retrievedHash = null;
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, deviceId);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
-                    return rs.getString("passkey_hash");
+                    retrievedHash = rs.getString("passkey_hash");
+                    logger.debug("Retrieved passkey_hash: {} for deviceId: {}", retrievedHash, deviceId);
+                    return retrievedHash;
                 }
             }
         } catch (SQLException e) {
             logger.error("Database error getting passkey hash for device: {}", deviceId, e);
         }
-        logger.debug("No passkey hash found for device: {}", deviceId);
-        return null;
+        logger.debug("No passkey hash found (or retrieved as null) for device: {}. Returning: {}", deviceId, retrievedHash);
+        return retrievedHash;
     }
 
     /**

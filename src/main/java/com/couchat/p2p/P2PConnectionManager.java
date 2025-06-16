@@ -10,6 +10,8 @@ import com.couchat.transfer.FileTransferService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy; // Ensure @Lazy is imported
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -48,7 +50,7 @@ public class P2PConnectionManager {
 
     private final DeviceDiscoveryService deviceDiscoveryService;
     private final EncryptionService encryptionService;
-    private final MessageService messageService;
+    private final MessageService messageService; // Keep this as is for now, will be used by P2PConnection
     private final FileTransferService fileTransferService;
     private final PasskeyAuthService passkeyAuthService;
     private String localPeerId;
@@ -58,6 +60,10 @@ public class P2PConnectionManager {
     private final ExecutorService incomingConnectionHandlerExecutor = Executors.newSingleThreadExecutor();
     private final ConcurrentHashMap<String, P2PConnection> activeConnections = new ConcurrentHashMap<>();
     private int servicePort;
+    private volatile boolean isListeningStarted = false;
+
+    @Value("${p2p.service.port:9091}") // Changed default port from 9090 to 9091
+    private int configuredServicePort;
 
     /**
      * Constructs a P2PConnectionManager.
@@ -69,70 +75,85 @@ public class P2PConnectionManager {
      * @param passkeyAuthService the service for obtaining the local peer ID.
      */
     @Autowired
-    public P2PConnectionManager(DeviceDiscoveryService deviceDiscoveryService,
+    public P2PConnectionManager(@Lazy DeviceDiscoveryService deviceDiscoveryService, // Added @Lazy
                                 EncryptionService encryptionService,
-                                MessageService messageService,
-                                FileTransferService fileTransferService,
-                                PasskeyAuthService passkeyAuthService) {
+                                @Lazy MessageService messageService, // Added @Lazy here
+                                @Lazy FileTransferService fileTransferService, // Added @Lazy
+                                @Lazy PasskeyAuthService passkeyAuthService) { // Added @Lazy
         this.deviceDiscoveryService = deviceDiscoveryService;
         this.encryptionService = encryptionService;
-        this.messageService = messageService;
+        this.messageService = messageService; // Initialize MessageService
         this.fileTransferService = fileTransferService;
         this.passkeyAuthService = passkeyAuthService;
+        logger.debug("P2PConnectionManager initialized with potentially lazy DeviceDiscoveryService, FileTransferService, and PasskeyAuthService."); // Updated log message
     }
 
     /**
      * Initializes the P2PConnectionManager.
-     * Fetches the local peer ID and starts listening for incoming P2P connections.
+     * Does not start listening immediately; waits for PasskeyAuthService.
      */
     @PostConstruct
     public void init() {
-        this.localPeerId = passkeyAuthService.getLocalUserId();
-        if (this.localPeerId == null || this.localPeerId.isEmpty()) {
-            logger.error("P2PConnectionManager cannot initialize: Local User ID is not available from PasskeyAuthService.");
-            // Application might need to be halted or run in a degraded mode if peer ID is essential.
+        // Do not start listening or get peer ID here.
+        // PasskeyAuthService will call startListening() when ready.
+        logger.info("P2PConnectionManager initialized. Waiting for authentication to start listening.");
+    }
+
+    /**
+     * Starts the P2P listening service. Called by PasskeyAuthService after authentication.
+     */
+    public synchronized void startListening() {
+        if (isListeningStarted) {
+            logger.info("P2P listening already started.");
             return;
         }
-        logger.info("P2PConnectionManager initializing with Local User ID: {}", this.localPeerId);
+        if (!passkeyAuthService.isAuthenticated() || passkeyAuthService.getLocalUserId() == null) {
+            logger.warn("Attempted to start P2P listening, but user is not authenticated or local user ID is null.");
+            return;
+        }
+
+        this.localPeerId = passkeyAuthService.getLocalUserId();
+        logger.info("Starting P2P Connection Manager listening for Peer ID: {}", this.localPeerId);
 
         try {
-            this.servicePort = deviceDiscoveryService.getLocalServicePort();
-            if (this.servicePort <= 0) {
-                 this.servicePort = 9090; // Fallback, ensure consistency
-                 logger.warn("Service port not explicitly set by DeviceDiscoveryService, defaulting to {}. Ensure this is intended.", this.servicePort);
-                 deviceDiscoveryService.setLocalServicePort(this.servicePort); // Inform discovery service of the port being used
-            }
+            serverSocket = new ServerSocket(configuredServicePort); // Use configured port
+            this.servicePort = serverSocket.getLocalPort(); // Get actual port (useful if configuredPort was 0)
 
-            serverSocket = new ServerSocket(this.servicePort);
-            // If port was 0 (dynamic), update discovery service with the actual port
-            if (this.servicePort == 0) {
-                this.servicePort = serverSocket.getLocalPort();
+            if (deviceDiscoveryService != null) {
                 deviceDiscoveryService.setLocalServicePort(this.servicePort);
+            } else {
+                logger.warn("DeviceDiscoveryService is null in P2PConnectionManager. Cannot set its local service port.");
             }
-            logger.info("P2PConnectionManager started. Listening for incoming connections on port {}", this.servicePort);
 
+            logger.info("P2PConnectionManager started. Listening for incoming connections on port {}", this.servicePort);
             incomingConnectionHandlerExecutor.execute(this::listenForIncomingConnections);
+            isListeningStarted = true;
+            logger.info("P2PConnectionManager listening tasks started successfully.");
 
         } catch (IOException e) {
-            logger.error("Failed to start P2PConnectionManager or open ServerSocket on port {}: {}", this.servicePort, e.getMessage(), e);
-            // Consider re-throwing or a more robust error handling/application shutdown strategy
+            logger.error("Failed to start P2PConnectionManager ServerSocket on port {}: {}", configuredServicePort, e.getMessage(), e);
+            isListeningStarted = false; // Reset flag
         }
     }
+
 
     /**
      * Listens for incoming P2P connections.
      * This method runs in a dedicated thread.
      */
     private void listenForIncomingConnections() {
+        if (!isListeningStarted) {
+             logger.info("P2P listening not started. Incoming connection listener will not run.");
+            return;
+        }
         while (!Thread.currentThread().isInterrupted() && serverSocket != null && !serverSocket.isClosed()) {
             try {
                 Socket clientSocket = serverSocket.accept(); // Blocking call
                 logger.info("Accepted incoming connection from {}", clientSocket.getRemoteSocketAddress());
-                // Set timeout for the entire handshake process for this connection
                 clientSocket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
                 connectionExecutor.execute(() -> handleIncomingConnection(clientSocket));
             } catch (SocketException se) {
-                if (serverSocket.isClosed()) {
+                if (serverSocket != null && serverSocket.isClosed()) {
                     logger.info("ServerSocket closed, stopping listening for incoming connections.");
                     break;
                 }
@@ -156,6 +177,15 @@ public class P2PConnectionManager {
      * @param clientSocket the socket for the incoming connection.
      */
     private void handleIncomingConnection(Socket clientSocket) {
+        if (!isListeningStarted || localPeerId == null) {
+            logger.warn("P2P manager not fully started or localPeerId not set. Cannot handle incoming connection from {}", clientSocket.getRemoteSocketAddress());
+            try {
+                clientSocket.close();
+            } catch (IOException e) {
+                logger.warn("Error closing socket during early exit from handleIncomingConnection", e);
+            }
+            return;
+        }
         String remotePeerId = null;
         P2PConnection connection = null;
         try {
@@ -180,6 +210,7 @@ public class P2PConnectionManager {
                 return;
             }
             String remotePublicKeyStr = clientPublicKeyMsg.substring(HANDSHAKE_MSG_PUBLIC_KEY.length());
+            logger.info("Incoming connection {}: Received raw PublicKey string: [{}]. Length: {}", remotePeerId, remotePublicKeyStr, remotePublicKeyStr.length()); // Added detailed log
             PublicKey remoteRsaPublicKey = encryptionService.getPublicKeyFromString(remotePublicKeyStr);
             if (remoteRsaPublicKey == null) {
                 logger.warn("Incoming connection {}: Invalid PublicKey received. Closing.", remotePeerId);
@@ -188,14 +219,49 @@ public class P2PConnectionManager {
             }
             logger.info("Incoming connection {}: Received PublicKey.", remotePeerId);
 
-            // Prevent duplicate connections
-            if (activeConnections.containsKey(remotePeerId)) {
-                logger.warn("Peer {} is already connected or connection attempt in progress. Closing new incoming connection from {}.", remotePeerId, clientSocket.getRemoteSocketAddress());
-                clientSocket.close();
-                return;
+            // Handle simultaneous connection attempts (tie-breaking)
+            P2PConnection existingEntry = activeConnections.get(remotePeerId);
+            if (existingEntry != null) {
+                if (existingEntry instanceof P2PConnection.Placeholder) {
+                    // This node (acceptor of this incoming socket) is also trying to connect to the remote peer.
+                    logger.info("Simultaneous connection attempt detected with peer {}. Local is acceptor, remote is initiator of this specific socket. Performing tie-breaking.", remotePeerId);
+                    // Tie-breaking rule: The peer with the lexicographically smaller PeerID lets its outgoing connection attempt proceed.
+                    // The peer with the larger PeerID drops its outgoing attempt and accepts the incoming one.
+                    if (this.localPeerId.compareTo(remotePeerId) < 0) {
+                        // Local PeerID is smaller. This node's outgoing attempt (represented by the placeholder) takes precedence.
+                        // So, we reject this incoming connection and let our outgoing attempt continue.
+                        logger.info("Tie-breaking: Local PeerID ({}) is smaller than Remote PeerID ({}). Rejecting incoming connection, local outgoing attempt will continue.", this.localPeerId, remotePeerId);
+                        try { clientSocket.close(); } catch (IOException e) { logger.warn("Error closing incoming socket for peer {} during tie-breaking (local wins).", remotePeerId, e); }
+                        return; // Abort handling this incoming connection.
+                    } else if (this.localPeerId.compareTo(remotePeerId) > 0) {
+                        // Local PeerID is larger. This node should drop its outgoing attempt (the placeholder)
+                        // and accept this incoming connection.
+                        logger.info("Tie-breaking: Local PeerID ({}) is larger than Remote PeerID ({}). Accepting incoming, cancelling local outgoing placeholder.", this.localPeerId, remotePeerId);
+                        P2PConnection removedPlaceholder = activeConnections.remove(remotePeerId); // Remove our outgoing placeholder.
+                        if (removedPlaceholder instanceof P2PConnection.Placeholder) {
+                            logger.info("Successfully removed outgoing placeholder for peer {} to accept incoming connection.", remotePeerId);
+                            // The placeholder itself doesn't have a task to cancel, the task in connectToPeer will eventually find no placeholder or a new connection.
+                        } else if (removedPlaceholder != null) { // Should ideally not be a full connection if placeholder logic was right
+                            logger.warn("Removed a non-placeholder entry for peer {} during tie-breaking (local yields). Entry was: {}. Closing it.", remotePeerId, removedPlaceholder.getClass().getName());
+                            removedPlaceholder.close(); // Close it just in case.
+                        }
+                        // Proceed to establish this incoming connection. 'existingEntry' is no longer the definitive state.
+                    } else {
+                        // PeerIDs are identical - this should ideally not happen if PeerIDs are globally unique.
+                        // Arbitrarily close incoming to prevent potential issues and log an error.
+                        logger.error("CRITICAL: Simultaneous connection attempt with peer {} but PeerIDs are identical! This should not happen. Closing incoming connection.", remotePeerId);
+                        try { clientSocket.close(); } catch (IOException e) { logger.warn("Error closing incoming socket for peer {} due to identical PeerIDs in tie-breaking.", remotePeerId, e); }
+                        return;
+                    }
+                } else { // existingEntry is a full, active P2PConnection
+                    logger.warn("Peer {} is already actively connected. Closing new duplicate incoming connection from {}.", remotePeerId, clientSocket.getRemoteSocketAddress());
+                    try { clientSocket.close(); } catch (IOException e) { logger.warn("Error closing incoming socket for already actively connected peer {}.", remotePeerId, e); }
+                    return;
+                }
             }
 
-            // Create connection object early to manage state, but it's not fully active yet.
+            // If we reach here, there was no existing connection, or a placeholder was handled by tie-breaking.
+            // Create a new P2PConnection object for this incoming connection.
             connection = new P2PConnection(
                     this.localPeerId, // Use the fetched localPeerId
                     remotePeerId, clientSocket,
@@ -291,10 +357,20 @@ public class P2PConnectionManager {
             logger.info("Cannot connect to self.");
             throw new IllegalStateException("Cannot connect to self."); // Throw exception
         }
-        if (activeConnections.containsKey(peerId) && !(activeConnections.get(peerId) instanceof P2PConnection.Placeholder)) {
-            logger.info("Already actively connected to peer: {}. Aborting new connection attempt.", peerId);
-            throw new IllegalStateException("Already connected to peer: " + peerId); // Throw exception
+
+        // Check if an active, handshake-complete connection already exists.
+        P2PConnection existingConnection = activeConnections.get(peerId);
+        if (existingConnection != null && !(existingConnection instanceof P2PConnection.Placeholder) && existingConnection.isHandshakeComplete()) {
+            logger.info("Attempt to connect to peer {} but an active and handshake-complete connection already exists. No action needed, returning success.", peerId);
+            return true; // Indicate success as the desired state (connected) is already met.
         }
+        // If existingConnection is a Placeholder, the putIfAbsent logic below will handle it by returning false from proceedWithConnection if placeholder is already there by this thread or another.
+        // If existingConnection is not null, not a placeholder, but also not handshake-complete,
+        // the current logic will also proceed to the putIfAbsent.
+        // This means if a previous attempt created a P2PConnection object that didn't complete handshake and wasn't cleared,
+        // this new attempt might be blocked if that old P2PConnection object is still in activeConnections.
+        // The `proceedWithConnection = activeConnections.putIfAbsent(peerId, placeholder) == null;` line is key here.
+        // If an old, non-placeholder, non-handshake-complete connection is there, putIfAbsent will return it, and proceedWithConnection will be false.
 
         DiscoveredPeer peer = deviceDiscoveryService.getPeerById(peerId);
         if (peer == null) {
@@ -302,7 +378,7 @@ public class P2PConnectionManager {
             return false; // Return false if peer not found
         }
 
-        logger.info("Attempting to connect to peer: {} at {}:{}\", peer.getPeerId(), peer.getIpAddress(), peer.getServicePort());
+        logger.info("Attempting to connect to peer: {} at {}:{}", peer.getPeerId(), peer.getIpAddress(), peer.getServicePort());
 
         P2PConnection.Placeholder placeholder;
         try {
@@ -319,7 +395,7 @@ public class P2PConnectionManager {
         boolean proceedWithConnection = activeConnections.putIfAbsent(peerId, placeholder) == null;
 
         if (!proceedWithConnection) {
-            logger.info("Connection attempt to peer {} is already in progress or established. Aborting this attempt.\", peerId);
+            logger.info("Connection attempt to peer {} is already in progress or established. Aborting this attempt.", peerId);
             // This case might indicate a race condition or concurrent attempts.
             // If another attempt already placed a placeholder or a real connection,
             // this attempt should not proceed.
@@ -330,17 +406,45 @@ public class P2PConnectionManager {
 
         connectionExecutor.execute(() -> {
             Socket socket = null;
-            P2PConnection connection = null; // Will replace placeholder
+            P2PConnection actualConnection = null; // Will hold the actual P2PConnection object
+
             try {
                 socket = new Socket(peer.getIpAddress(), peer.getServicePort());
-                socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS); // Timeout for handshake
+                socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS); // Set timeout for handshake operations
                 logger.info("Successfully connected socket to peer {} at {}", peer.getPeerId(), socket.getRemoteSocketAddress());
 
-                OutputStream outputStream = socket.getOutputStream();
-                InputStream inputStream = socket.getInputStream();
+                // Create the actual P2PConnection object for this outgoing connection.
+                // this.localPeerId is crucial here; it must be non-null for the handshake to succeed.
+                // The P2PConnection constructor logs if this.localPeerId is null.
+                // Corrected constructor call to include this.localPeerId as the first argument.
+                actualConnection = new P2PConnection(this.localPeerId, peer.getPeerId(), socket, this, encryptionService, messageService, fileTransferService);
+
+                // Replace the placeholder in activeConnections with the actual connection object.
+                // A P2PConnection.Placeholder is expected to be present, put by putIfAbsent earlier.
+                Object currentEntry = activeConnections.get(peer.getPeerId());
+                if (currentEntry instanceof P2PConnection.Placeholder) {
+                    // Attempt to atomically replace the placeholder with the actual connection.
+                    if (!activeConnections.replace(peer.getPeerId(), (P2PConnection.Placeholder)currentEntry, actualConnection)) {
+                        // If replacement fails, it means the entry was changed by another thread between get and replace.
+                        logger.warn("Failed to replace placeholder for peer {} due to concurrent modification. Closing this connection attempt.", peer.getPeerId());
+                        actualConnection.close(); // Close the newly created but now orphaned connection.
+                        return; // Abort this connection attempt.
+                    }
+                    logger.info("Successfully replaced placeholder with actual connection for peer {}.", peer.getPeerId());
+                } else {
+                    // If it's not a placeholder (or null), there's an issue with connection management logic.
+                    // This might happen if the placeholder was removed, or if proceedWithConnection logic was flawed.
+                    logger.error("Expected a placeholder for peer {} but found {}. Closing this connection attempt.", peer.getPeerId(), currentEntry);
+                    if(actualConnection != null) actualConnection.close(); // Close the newly created connection if it exists.
+                    return; // Abort.
+                }
+
+                // Get streams directly from the socket, not from actualConnection.
+                OutputStream outputStream = socket.getOutputStream(); // Use the socket's stream
+                InputStream inputStream = socket.getInputStream();   // Use the socket's stream
 
                 // 1. Send local PeerID
-                // String localId = deviceDiscoveryService.getLocalPeerId(); // Now using this.localPeerId
+                // this.localPeerId is critical for the remote peer to identify this node.
                 sendMessage(outputStream, HANDSHAKE_MSG_PEER_ID + this.localPeerId);
                 logger.info("Outgoing connection {}: Sent local PeerID.", peer.getPeerId());
 
@@ -350,6 +454,7 @@ public class P2PConnectionManager {
                 logger.info("Outgoing connection {}: Sent local PublicKey.", peer.getPeerId());
 
                 // 3. Receive PeerID from remote
+                // Expecting a message prefixed with HANDSHAKE_MSG_PEER_ID followed by the remote peer ID.
                 String remotePeerIdMsg = readMessage(inputStream);
                 if (remotePeerIdMsg == null || !remotePeerIdMsg.startsWith(HANDSHAKE_MSG_PEER_ID)) {
                     throw new IOException("Did not receive PeerID from remote peer " + peer.getPeerId());
@@ -361,11 +466,13 @@ public class P2PConnectionManager {
                 logger.info("Outgoing connection {}: Received remote PeerID: {}", peer.getPeerId(), receivedRemotePeerId);
 
                 // 4. Receive PublicKey from remote
+                // Expecting a message prefixed with HANDSHAKE_MSG_PUBLIC_KEY followed by the Base64 encoded public key string.
                 String remotePublicKeyMsg = readMessage(inputStream);
                 if (remotePublicKeyMsg == null || !remotePublicKeyMsg.startsWith(HANDSHAKE_MSG_PUBLIC_KEY)) {
                     throw new IOException("Did not receive PublicKey from remote peer " + peer.getPeerId());
                 }
                 String remotePublicKeyStr = remotePublicKeyMsg.substring(HANDSHAKE_MSG_PUBLIC_KEY.length());
+                logger.info("Outgoing connection {}: Received raw PublicKey string from remote: [{}]. Length: {}", peer.getPeerId(), remotePublicKeyStr, remotePublicKeyStr.length());
                 PublicKey remoteRsaPublicKey = encryptionService.getPublicKeyFromString(remotePublicKeyStr);
                 if (remoteRsaPublicKey == null) {
                     throw new IOException("Invalid PublicKey received from remote peer " + peer.getPeerId());
@@ -373,42 +480,54 @@ public class P2PConnectionManager {
                 logger.info("Outgoing connection {}: Received remote PublicKey.", peer.getPeerId());
 
                 // 5. Receive encrypted AES session key
+                // Expecting a message prefixed with HANDSHAKE_MSG_SESSION_KEY followed by the Base64 encoded, RSA encrypted AES session key.
+                // This node (initiator) receives the session key, which was generated and encrypted by the remote peer (acceptor).
                 String encryptedSessionKeyMsg = readMessage(inputStream);
                 if (encryptedSessionKeyMsg == null || !encryptedSessionKeyMsg.startsWith(HANDSHAKE_MSG_SESSION_KEY)) {
                     throw new IOException("Did not receive session key from remote peer " + peer.getPeerId());
                 }
                 String encryptedSessionKeyB64 = encryptedSessionKeyMsg.substring(HANDSHAKE_MSG_SESSION_KEY.length());
+                // Decrypt the session key using this node's RSA private key.
                 byte[] decryptedSessionKeyBytes = encryptionService.decryptWithRsaPrivateKey(Base64.getDecoder().decode(encryptedSessionKeyB64));
                 if (decryptedSessionKeyBytes == null) {
                     throw new IOException("Failed to decrypt session key from remote peer " + peer.getPeerId());
                 }
                 SecretKey aesSessionKey = encryptionService.getAesKeyFromBytes(decryptedSessionKeyBytes);
-                connection.setSessionAesKey(aesSessionKey);
+
+                actualConnection.setSessionAesKey(aesSessionKey); // Set the decrypted AES session key on the connection object.
                 logger.info("Outgoing connection {}: Received and decrypted session key.", peer.getPeerId());
 
                 // 6. Send READY to remote
+                // Signal that this node has completed its part of the handshake and is ready for P2P communication.
                 sendMessage(outputStream, HANDSHAKE_MSG_READY);
                 logger.info("Outgoing connection {}: Sent READY. Handshake successful.", peer.getPeerId());
-                connection.setHandshakeComplete();
-                connection.startListening();
+                actualConnection.setHandshakeComplete(); // Mark the connection as handshake complete.
+                actualConnection.startListening();       // Start the dedicated listener thread for this connection.
 
-                socket.setSoTimeout(0); // Reset timeout for normal operation
+                socket.setSoTimeout(0); // Reset socket timeout to 0 (infinite) for normal operation after successful handshake.
 
             } catch (SocketTimeoutException ste) {
+                // Handle cases where a socket operation times out during the handshake (e.g., readMessage).
                 logger.warn("Handshake timeout while connecting to peer {}. Error: {}", peer.getPeerId(), ste.getMessage());
-                if (connection != null) connection.close(); else if (socket != null) try { socket.close(); } catch (IOException e) {/*ignore*/}
-                activeConnections.remove(peer.getPeerId()); // Remove placeholder or failed connection
+                // Close the connection if it was partially formed or the socket if it was created.
+                if (actualConnection != null) actualConnection.close(); else if (socket != null) try { socket.close(); } catch (IOException e) {/*ignore socket close error*/}
+                // Remove the connection or its placeholder from activeConnections to allow future attempts.
+                // P2PConnection.close() should ideally handle its removal from activeConnections.
+                // This is a fallback or ensures placeholder removal if actualConnection was never fully established and put.
+                activeConnections.remove(peer.getPeerId());
             } catch (IOException e) {
+                // Handle general I/O errors during the connection or handshake process (e.g., network issues, stream errors).
                 logger.error("IOException while connecting to peer {}: {}", peer.getPeerId(), e.getMessage());
-                if (connection != null) connection.close(); else if (socket != null) try { socket.close(); } catch (IOException ioe) {/*ignore*/}
-                activeConnections.remove(peer.getPeerId());
+                if (actualConnection != null) actualConnection.close(); else if (socket != null) try { socket.close(); } catch (IOException ioe) {/*ignore socket close error*/}
+                activeConnections.remove(peer.getPeerId()); // Ensure cleanup from active connections.
             } catch (Exception e) {
+                // Catch any other unexpected exceptions during the connection attempt to prevent thread death.
                 logger.error("Unexpected error while connecting to peer {}: {}", peer.getPeerId(), e.getMessage(), e);
-                if (connection != null) connection.close(); else if (socket != null) try { socket.close(); } catch (IOException ioe) {/*ignore*/}
-                activeConnections.remove(peer.getPeerId());
+                if (actualConnection != null) actualConnection.close(); else if (socket != null) try { socket.close(); } catch (IOException ioe) {/*ignore socket close error*/}
+                activeConnections.remove(peer.getPeerId()); // Ensure cleanup.
             }
         });
-        return true; // Connection attempt successfully queued
+        return true; // Indicate that the connection attempt has been successfully queued for execution.
     }
 
     private void closeClientSocketOnError(Socket clientSocket, String remotePeerId, P2PConnection connection) {
@@ -449,12 +568,19 @@ public class P2PConnectionManager {
     }
 
     private String readMessage(InputStream inputStream) throws IOException {
-        byte[] buffer = new byte[1024]; // Assuming handshake messages are not excessively long
+        byte[] buffer = new byte[2048]; // Increased buffer size for potentially longer keys
         int bytesRead = inputStream.read(buffer);
         if (bytesRead == -1) {
+            logger.warn("readMessage: End of stream reached.");
             return null;
         }
-        return new String(buffer, 0, bytesRead, StandardCharsets.UTF_8).trim();
+        // Log raw bytes before converting to string, to inspect for non-printable chars
+        // logger.debug("readMessage: Raw bytes read: {}", new String(buffer, 0, bytesRead, StandardCharsets.ISO_8859_1)); // Example: ISO_8859_1 to see all bytes
+        String rawMessage = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+        logger.debug("readMessage: Raw message received before trim: [{}], length: {}", rawMessage, rawMessage.length());
+        String trimmedMessage = rawMessage.trim();
+        logger.debug("readMessage: Trimmed message: [{}], length: {}", trimmedMessage, trimmedMessage.length());
+        return trimmedMessage;
     }
 
     /**
@@ -507,28 +633,30 @@ public class P2PConnectionManager {
     @PreDestroy
     public void shutdown() {
         logger.info("Shutting down P2PConnectionManager...");
-        incomingConnectionHandlerExecutor.shutdownNow();
+        isListeningStarted = false; // Stop new operations
+
+        incomingConnectionHandlerExecutor.shutdown();
         connectionExecutor.shutdown();
         try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+                logger.info("ServerSocket closed.");
+            }
+            if (!incomingConnectionHandlerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                incomingConnectionHandlerExecutor.shutdownNow();
+            }
             if (!connectionExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                 connectionExecutor.shutdownNow();
             }
+        } catch (IOException e) {
+            logger.error("Error closing server socket during shutdown", e);
         } catch (InterruptedException e) {
-            connectionExecutor.shutdownNow();
+            logger.error("Interrupted during shutdown", e);
             Thread.currentThread().interrupt();
         }
 
         activeConnections.values().forEach(P2PConnection::close);
         activeConnections.clear();
-
-        if (serverSocket != null && !serverSocket.isClosed()) {
-            try {
-                serverSocket.close();
-                logger.info("ServerSocket closed.");
-            } catch (IOException e) {
-                logger.error("Error closing server socket: {}", e.getMessage(), e);
-            }
-        }
-        logger.info("P2PConnectionManager shut down.");
+        logger.info("All active P2P connections closed. P2PConnectionManager shut down.");
     }
 }

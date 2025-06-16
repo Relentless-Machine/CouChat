@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Lazy; // Import @Lazy
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -18,7 +19,9 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant; // Added for model construction
 import java.util.Map;
+import java.util.Optional; // Added
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -54,7 +57,7 @@ public class FileTransferService {
      */
     @Autowired
     public FileTransferService(MessageService messageService,
-                               P2PConnectionManager p2pConnectionManager,
+                               @Lazy P2PConnectionManager p2pConnectionManager, // Added @Lazy
                                PasskeyAuthService passkeyAuthService) {
         this.messageService = messageService;
         this.p2pConnectionManager = p2pConnectionManager;
@@ -72,6 +75,7 @@ public class FileTransferService {
             }
         } catch (IOException e) {
             logger.error("Failed to create directory for incoming files: {}. Incoming file transfers may fail.", this.incomingFilesPath, e);
+            // Consider re-throwing or setting a service-unavailable flag if this is critical
         }
     }
 
@@ -315,22 +319,20 @@ public class FileTransferService {
         transfer.setStatus(FileTransferStatus.AWAITING_ACCEPTANCE); // Initial status
         incomingTransfers.put(fileInfo.getFileId(), transfer);
 
-        logger.info("Incoming file transfer offer received. File ID: {} from sender: {}. Target path: {}. Awaiting user acceptance (auto-accepting for prototype).",
+        logger.info("Incoming file transfer offer received. File ID: {} from sender: {}. Target path: {}. Awaiting user acceptance.",
                     fileInfo.getFileId(), senderId, targetFilePath);
 
-        // For prototype: Auto-accept the transfer
-        String localUserId = passkeyAuthService.getLocalUserId(); // Corrected
-        if (localUserId != null) {
-            Message acceptedMessage = messageService.createFileTransferAcceptedMessage(localUserId, senderId, fileInfo.getFileId());
-            p2pConnectionManager.sendMessage(senderId, acceptedMessage);
-            transfer.setStatus(FileTransferStatus.RECEIVING_CHUNKS);
-            logger.info("Auto-accepted file transfer ID: {} from {}. Sent FILE_TRANSFER_ACCEPTED. Status set to RECEIVING_CHUNKS.", fileInfo.getFileId(), senderId);
-        } else {
-            logger.error("Cannot auto-accept file transfer ID: {} from {}: Local Peer ID is null. Cannot send acceptance.", fileInfo.getFileId(), senderId);
-            incomingTransfers.remove(fileInfo.getFileId()); // Remove from map as we can't proceed
-            // No need to set FAILED status on transfer object as it might not be fully initialized or useful
-            // Optionally, send a rejection if we could identify ourselves to the sender, but here localPeerId is null.
-        }
+        // Removed auto-accept for prototype. Acceptance should be triggered by user via API.
+        // String localUserId = passkeyAuthService.getLocalUserId();
+        // if (localUserId != null) {
+        //     Message acceptedMessage = messageService.createFileTransferAcceptedMessage(localUserId, senderId, fileInfo.getFileId());
+        //     p2pConnectionManager.sendMessage(senderId, acceptedMessage);
+        //     transfer.setStatus(FileTransferStatus.RECEIVING_CHUNKS);
+        //     logger.info("Auto-accepted file transfer ID: {} from {}. Sent FILE_TRANSFER_ACCEPTED. Status set to RECEIVING_CHUNKS.", fileInfo.getFileId(), senderId);
+        // } else {
+        //     logger.error("Cannot auto-accept file transfer ID: {} from {}: Local Peer ID is null. Cannot send acceptance.", fileInfo.getFileId(), senderId);
+        //     incomingTransfers.remove(fileInfo.getFileId());
+        // }
     }
 
     private String sanitizeFileName(String fileName) {
@@ -561,5 +563,163 @@ public class FileTransferService {
     // Example of how to get an IncomingFileTransfer (e.g., for UI updates)
     public IncomingFileTransfer getIncomingTransfer(String fileId) {
         return incomingTransfers.get(fileId);
+    }
+
+    // Helper method to map P2P transfer status to Model transfer status
+    private com.couchat.transfer.model.FileTransfer.FileTransferStatus mapP2PStatusToModelStatus(FileTransferStatus p2pStatus) {
+        if (p2pStatus == null) {
+            return com.couchat.transfer.model.FileTransfer.FileTransferStatus.FAILED; // Or some default
+        }
+        switch (p2pStatus) {
+            case AWAITING_ACCEPTANCE:
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.PENDING;
+            case ACCEPTED: // Added mapping for P2P ACCEPTED state
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.ACCEPTED;
+            case SENDING_CHUNKS:
+            case RECEIVING_CHUNKS:
+            case AWAITING_CHUNKS: // Added mapping for P2P AWAITING_CHUNKS state
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.IN_PROGRESS;
+            case COMPLETED:
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.COMPLETED;
+            case FAILED:
+                // TIMED_OUT is not in FileTransferStatus enum, so removed
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.FAILED;
+            case REJECTED: // Added mapping for P2P REJECTED state
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.REJECTED;
+            case CANCELLED:
+                // CANCELLED_BY_SENDER and CANCELLED_BY_RECEIVER are not in FileTransferStatus enum
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.CANCELLED;
+            default:
+                logger.warn("Unhandled P2P FileTransferStatus: {}. Defaulting to FAILED for model.", p2pStatus);
+                return com.couchat.transfer.model.FileTransfer.FileTransferStatus.FAILED;
+        }
+    }
+
+    public Optional<com.couchat.transfer.model.FileTransfer> getFileTransferById(String fileId) {
+        OutgoingFileTransfer oft = outgoingTransfers.get(fileId);
+        if (oft != null) {
+            FileInfo info = oft.getFileInfo();
+            long modelFileSize = info.getFileSize();
+            if (modelFileSize == 0) {
+                logger.warn("Mapping 0-byte file size to 1 for FileTransfer model due to constructor constraint for fileId: {}", fileId);
+                modelFileSize = 1; // Workaround for model constraint
+            }
+            try {
+                com.couchat.transfer.model.FileTransfer modelFt = new com.couchat.transfer.model.FileTransfer(
+                        fileId,
+                        "P2P-O-" + fileId, // Placeholder messageId
+                        info.getFileName(),
+                        modelFileSize,
+                        info.getFileType(),
+                        oft.getFilePath(),
+                        mapP2PStatusToModelStatus(oft.getStatus()),
+                        null, // hashValue
+                        Instant.now(), // createdAt - P2P object doesn't store this
+                        Instant.now()  // updatedAt
+                );
+                return Optional.of(modelFt);
+            } catch (IllegalArgumentException e) {
+                logger.error("Error constructing FileTransfer model for outgoing transfer {}: {}", fileId, e.getMessage());
+                return Optional.empty();
+            }
+        }
+
+        IncomingFileTransfer ift = incomingTransfers.get(fileId);
+        if (ift != null) {
+            FileInfo info = ift.getFileInfo();
+            long modelFileSize = info.getFileSize();
+            if (modelFileSize == 0) {
+                logger.warn("Mapping 0-byte file size to 1 for FileTransfer model due to constructor constraint for fileId: {}", fileId);
+                modelFileSize = 1; // Workaround for model constraint
+            }
+            try {
+                com.couchat.transfer.model.FileTransfer modelFt = new com.couchat.transfer.model.FileTransfer(
+                        fileId,
+                        "P2P-I-" + fileId, // Placeholder messageId
+                        info.getFileName(),
+                        modelFileSize,
+                        info.getFileType(),
+                        ift.getTargetPath() != null ? ift.getTargetPath().toString() : null,
+                        mapP2PStatusToModelStatus(ift.getStatus()),
+                        null, // hashValue
+                        Instant.now(), // createdAt
+                        Instant.now()  // updatedAt
+                );
+                return Optional.of(modelFt);
+            } catch (IllegalArgumentException e) {
+                logger.error("Error constructing FileTransfer model for incoming transfer {}: {}", fileId, e.getMessage());
+                return Optional.empty();
+            }
+        }
+        return Optional.empty();
+    }
+
+    public boolean acceptIncomingTransfer(String fileId) {
+        IncomingFileTransfer transfer = incomingTransfers.get(fileId);
+        if (transfer == null) {
+            logger.warn("Cannot accept transfer {}: not found.", fileId);
+            return false;
+        }
+        if (transfer.getStatus() != FileTransferStatus.AWAITING_ACCEPTANCE) {
+            logger.warn("Cannot accept transfer {}: not in AWAITING_ACCEPTANCE state. Current status: {}", fileId, transfer.getStatus());
+            return false;
+        }
+
+        String localUserId = passkeyAuthService.getLocalUserId();
+        if (localUserId == null) {
+            logger.error("Cannot accept file transfer ID: {}: Local User ID is null. Cannot send acceptance.", fileId);
+            // Optionally set transfer status to FAILED here if that's desired behavior
+            // transfer.setStatus(FileTransferStatus.FAILED);
+            return false;
+        }
+
+        transfer.setStatus(FileTransferStatus.RECEIVING_CHUNKS); // Or an intermediate ACCEPTED status first
+        Message acceptedMessage = messageService.createFileTransferAcceptedMessage(localUserId, transfer.getSenderId(), fileId);
+        // boolean messageSent = p2pConnectionManager.sendMessage(transfer.getSenderId(), acceptedMessage);
+        // Assuming sendMessage is void and logs errors internally or throws them.
+        // For now, we proceed optimistically after calling sendMessage.
+        p2pConnectionManager.sendMessage(transfer.getSenderId(), acceptedMessage);
+        logger.info("User accepted file transfer ID: {} from {}. Sent FILE_TRANSFER_ACCEPTED. Status set to RECEIVING_CHUNKS.", fileId, transfer.getSenderId());
+        return true; // Assume success if no exception from sendMessage
+
+        // if (messageSent) {
+        //     logger.info("User accepted file transfer ID: {} from {}. Sent FILE_TRANSFER_ACCEPTED. Status set to RECEIVING_CHUNKS.", fileId, transfer.getSenderId());
+        //     return true;
+        // } else {
+        //     logger.error("Failed to send FILE_TRANSFER_ACCEPTED message for file ID: {}. Rolling back status.", fileId);
+        //     transfer.setStatus(FileTransferStatus.AWAITING_ACCEPTANCE); // Rollback status
+        //     // Consider further error handling or retry mechanisms
+        //     return false;
+        // }
+    }
+
+    public boolean rejectIncomingTransfer(String fileId) {
+        IncomingFileTransfer transfer = incomingTransfers.get(fileId);
+        if (transfer == null) {
+            logger.warn("Cannot reject transfer {}: not found.", fileId);
+            return false;
+        }
+         if (transfer.getStatus() != FileTransferStatus.AWAITING_ACCEPTANCE) {
+            logger.warn("Cannot reject transfer {}: not in AWAITING_ACCEPTANCE state. Current status: {}", fileId, transfer.getStatus());
+            // If already rejected or failed, could return true or false based on desired idempotency
+            return false;
+        }
+
+        String localUserId = passkeyAuthService.getLocalUserId();
+        if (localUserId == null) {
+            logger.warn("Local user ID is null, cannot send rejection message for file transfer ID: {}. Marking as rejected locally.", fileId);
+            transfer.setStatus(FileTransferStatus.REJECTED);
+            incomingTransfers.remove(fileId); // Clean up
+            return true; // Local rejection successful
+        }
+
+        transfer.setStatus(FileTransferStatus.REJECTED);
+        // Assuming createFileTransferErrorMessage can be used for rejection, or a specific rejection message exists
+        Message rejectedMessage = messageService.createFileTransferErrorMessage(localUserId, transfer.getSenderId(), fileId, "USER_REJECTED", "User rejected the file transfer.");
+        p2pConnectionManager.sendMessage(transfer.getSenderId(), rejectedMessage); // Send regardless of success for now, log if fails
+
+        logger.info("User rejected file transfer ID: {} from {}. Sent rejection notification.", fileId, transfer.getSenderId());
+        incomingTransfers.remove(fileId); // Clean up rejected transfer from active map
+        return true;
     }
 }

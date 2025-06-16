@@ -26,7 +26,8 @@ public class AuthenticationManagerTest {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthenticationManagerTest.class);
     private AuthenticationManager authenticationManager;
-    private static final String DB_URL = "jdbc:sqlite:couchat_storage.db";
+    // Use the same DB_URL as AuthenticationManager to inspect its database
+    private static final String TEST_DB_URL = "jdbc:sqlite:auth_manager_standalone.db";
 
     /**
      * Sets up the testing environment before each test.
@@ -35,11 +36,64 @@ public class AuthenticationManagerTest {
      */
     @BeforeEach
     void setUp() {
+        logger.info("Starting setUp for a new test...");
+        // Ensure a clean slate by deleting the standalone DB file before each test run
+        try {
+            java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get("auth_manager_standalone.db"));
+            logger.info("Deleted auth_manager_standalone.db before test run to ensure clean state.");
+        } catch (java.io.IOException e) {
+            logger.error("Failed to delete auth_manager_standalone.db before test run: {}", e.getMessage());
+            // Fail fast if we can't ensure a clean DB state, as tests might be unreliable.
+            fail("Failed to delete auth_manager_standalone.db: " + e.getMessage());
+        }
+
         authenticationManager = new AuthenticationManager();
+        logger.info("AuthenticationManager instance created. Constructor (including initializeDatabaseTables) should have run.");
+
+        // Verify table creation immediately after AuthenticationManager instantiation
+        verifyTablesExist();
+
         // Clear all users and devices from the database and in-memory loggedInUsers map.
         // This also re-adds the default 'testuser'.
+        // Note: clearAllAuthentications also calls addUserToDbIfNotExists, which assumes tables exist.
         authenticationManager.clearAllAuthentications();
+        logger.info("AuthenticationManager.clearAllAuthentications() called. Default test user should be re-added.");
         logger.info("AuthenticationManager initialized and all authentication data cleared for test.");
+    }
+
+    private void verifyTablesExist() {
+        logger.info("Verifying existence of tables in {}", TEST_DB_URL);
+        String sql = "SELECT name FROM sqlite_master WHERE type='table' AND (name='users' OR name='devices')";
+        boolean usersTableExists = false;
+        boolean devicesTableExists = false;
+        int relevantTableCount = 0;
+
+        try (Connection conn = DriverManager.getConnection(TEST_DB_URL); // Use TEST_DB_URL
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+
+            while (rs.next()) {
+                String tableName = rs.getString("name");
+                logger.info("Found table in {}: {}", TEST_DB_URL, tableName);
+                if ("users".equals(tableName)) {
+                    usersTableExists = true;
+                }
+                if ("devices".equals(tableName)) {
+                    devicesTableExists = true;
+                }
+                if ("users".equals(tableName) || "devices".equals(tableName)) {
+                    relevantTableCount++;
+                }
+            }
+        } catch (SQLException e) {
+            logger.error("SQL error during table verification in {}: {}", TEST_DB_URL, e.getMessage(), e);
+            fail("SQL error during table verification: " + e.getMessage());
+        }
+
+        assertTrue(usersTableExists, "'users' table should exist in " + TEST_DB_URL + " after AuthenticationManager initialization.");
+        assertTrue(devicesTableExists, "'devices' table should exist in " + TEST_DB_URL + " after AuthenticationManager initialization.");
+        assertEquals(2, relevantTableCount, "Exactly two tables (users, devices) should be found in " + TEST_DB_URL);
+        logger.info("Table verification successful for {}: 'users' table exists: {}, 'devices' table exists: {}. Relevant tables found: {}", TEST_DB_URL, usersTableExists, devicesTableExists, relevantTableCount);
     }
 
     /**
@@ -129,7 +183,7 @@ public class AuthenticationManagerTest {
                 "User '" + expectedUsername + "' should be logged in after successful OAuth authentication for a new user.");
 
         // Verify user was created in the database with OAuth details
-        try (Connection conn = DriverManager.getConnection(DB_URL);
+        try (Connection conn = DriverManager.getConnection(TEST_DB_URL);
              PreparedStatement stmt = conn.prepareStatement("SELECT oauth_provider, oauth_id FROM users WHERE username = ?")) {
             stmt.setString(1, expectedUsername);
             try (ResultSet rs = stmt.executeQuery()) {
@@ -152,7 +206,7 @@ public class AuthenticationManagerTest {
         String username = "microsoft_existingoauthuser456";
 
         // Manually add the OAuth user first to simulate an existing user
-        try (Connection conn = DriverManager.getConnection(DB_URL);
+        try (Connection conn = DriverManager.getConnection(TEST_DB_URL);
              PreparedStatement stmt = conn.prepareStatement("INSERT INTO users (username, oauth_provider, oauth_id) VALUES (?, ?, ?)")) {
             stmt.setString(1, username);
             stmt.setString(2, "MICROSOFT");
@@ -224,7 +278,7 @@ public class AuthenticationManagerTest {
     /**
      * Tests successful binding of a device passkey to a logged-in user.
      */
-    @Test
+    @Test // Re-enabled test
     void testBindDevicePasskey_Success_UserLoggedIn() {
         String deviceId = "testDevice123";
         String passkey = "strongPasskey456";
@@ -246,7 +300,7 @@ public class AuthenticationManagerTest {
     /**
      * Tests successful update of a device passkey for an existing device.
      */
-    @Test
+    @Test // Re-enabled test
     void testBindDevicePasskey_UpdateExistingDevice_Success() {
         String deviceId = "testDevice789";
         String initialPasskey = "initialPasskey";

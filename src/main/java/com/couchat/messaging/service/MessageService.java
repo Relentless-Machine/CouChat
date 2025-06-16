@@ -7,9 +7,11 @@ import com.couchat.messaging.model.FileChunk;
 import com.couchat.repository.MessageRepository;
 import com.couchat.repository.ConversationRepository;
 import com.couchat.conversation.model.Conversation; // Ensure this is the correct import
+import com.couchat.p2p.P2PConnectionManager; // Added import for P2PConnectionManager
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy; // Added import for @Lazy
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,11 +30,15 @@ public class MessageService {
     private final MessageRepository messageRepository;
     private final ConversationRepository conversationRepository;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper; // Added ObjectMapper
+    private final P2PConnectionManager p2pConnectionManager; // Added P2PConnectionManager
 
     @Autowired
-    public MessageService(MessageRepository messageRepository, ConversationRepository conversationRepository) {
+    public MessageService(MessageRepository messageRepository,
+                          ConversationRepository conversationRepository,
+                          @Lazy P2PConnectionManager p2pConnectionManager) { // Added @Lazy to P2PConnectionManager
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
+        this.p2pConnectionManager = p2pConnectionManager; // Initialize P2PConnectionManager
         this.objectMapper = new com.fasterxml.jackson.databind.ObjectMapper(); // Initialize ObjectMapper
         this.objectMapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule()); // Register JavaTimeModule if not already configured globally
     }
@@ -41,13 +47,7 @@ public class MessageService {
     public Message sendMessage(Message message) {
         logger.info("MessageService.sendMessage called for messageId: {}", message.getMessageId());
 
-        // The conversationId should have been set when the Message object was created
-        // by one of the create...Message methods, which use determineConversationId.
-        // Therefore, the logic to find/create and set conversationId here is removed.
         if (message.getConversationId() == null) {
-            // This case should ideally not happen for messages requiring a conversationId (like P2P text/file messages)
-            // if they are constructed correctly via create...Message methods.
-            // Log a warning if it's a type that should have one.
             if (message.getSenderId() != null && message.getRecipientId() != null &&
                 !message.getSenderId().equals(message.getRecipientId()) &&
                 (message.getType() == Message.MessageType.TEXT ||
@@ -55,24 +55,18 @@ public class MessageService {
                  message.getType() == Message.MessageType.FILE_CHUNK)) {
                 logger.error("Message {} of type {} is missing a conversationId, which should have been set during creation. Proceeding, but this may indicate an issue.",
                              message.getMessageId(), message.getType());
-                // Optionally, you could throw an exception here if conversationId is critical and missing.
-                // throw new IllegalStateException("Message cannot be sent without a conversationId: " + message.getMessageId());
-            } else {
-                 logger.warn("Message {} has no conversationId. This might be normal for certain system messages or if handled differently.", message.getMessageId());
             }
         }
 
         Message savedMessage = messageRepository.save(message);
 
         if (savedMessage != null && savedMessage.getConversationId() != null) {
-            // Ensure the conversation exists for P2P messages before updating last message details
             if (message.getSenderId() != null && message.getRecipientId() != null &&
                 !message.getSenderId().equals(message.getRecipientId()) &&
                  (message.getType() == Message.MessageType.TEXT ||
                   message.getType() == Message.MessageType.FILE_INFO ||
                   message.getType() == Message.MessageType.FILE_CHUNK)) {
                 try {
-                    // This ensures the conversation record is created if it's the very first message.
                     findOrCreateP2PConversation(savedMessage.getSenderId(), savedMessage.getRecipientId());
                 } catch (IllegalArgumentException e) {
                     logger.error("Failed to ensure P2P conversation exists for message {}: {}", savedMessage.getMessageId(), e.getMessage());
@@ -90,6 +84,26 @@ public class MessageService {
         } else if (savedMessage != null && savedMessage.getConversationId() == null) {
             logger.error("Saved message {} but conversationId is still null. Last message details and unread count might not be updated.", savedMessage.getMessageId());
         }
+
+        // Attempt to send the message via P2P after saving it
+        if (savedMessage != null && savedMessage.getRecipientId() != null &&
+            (savedMessage.getType() == Message.MessageType.TEXT ||
+             savedMessage.getType() == Message.MessageType.FILE_INFO ||
+             savedMessage.getType() == Message.MessageType.FILE_CHUNK || // Add other types that need direct P2P sending
+             savedMessage.getType() == Message.MessageType.READ_RECEIPT )) { // Read receipts also go P2P
+            try {
+                logger.info("Attempting to send message {} to recipient {} via P2P.", savedMessage.getMessageId(), savedMessage.getRecipientId());
+                p2pConnectionManager.sendMessage(savedMessage.getRecipientId(), savedMessage);
+                // Note: P2PConnectionManager.sendMessage itself should handle if the connection is not active.
+                // It currently logs a warning. We might want to update the message status here if P2P send fails immediately.
+            } catch (Exception e) {
+                logger.error("Error attempting to send message {} to {} via P2P: {}", savedMessage.getMessageId(), savedMessage.getRecipientId(), e.getMessage(), e);
+                // Optionally, update message status to FAILED if P2P send throws an unexpected exception
+                // savedMessage.setStatus(Message.MessageStatus.FAILED);
+                // messageRepository.save(savedMessage); // Persist status change
+            }
+        }
+
         return savedMessage;
     }
 
