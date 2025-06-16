@@ -275,32 +275,34 @@ public class P2PConnectionManager {
      * This side (initiator) will generate the AES session key.
      *
      * @param peerId The ID of the peer to connect to.
+     * @return true if the connection attempt was successfully initiated, false otherwise.
+     * @throws IllegalStateException if trying to connect to self or already connected.
      */
-    public void connectToPeer(String peerId) {
+    public boolean connectToPeer(String peerId) { // Changed return type to boolean
         if (peerId == null || peerId.isEmpty()) {
             logger.warn("Cannot connect: Peer ID is null or empty.");
-            return;
+            return false; // Return false for invalid input
         }
         if (this.localPeerId == null || this.localPeerId.isEmpty()) {
             logger.error("Cannot connect: Local Peer ID is not available. P2PConnectionManager might not have initialized correctly.");
-            return;
+            return false; // Return false if local peer ID is not set
         }
         if (peerId.equals(this.localPeerId)) {
             logger.info("Cannot connect to self.");
-            return;
+            throw new IllegalStateException("Cannot connect to self."); // Throw exception
         }
         if (activeConnections.containsKey(peerId) && !(activeConnections.get(peerId) instanceof P2PConnection.Placeholder)) {
             logger.info("Already actively connected to peer: {}. Aborting new connection attempt.", peerId);
-            return;
+            throw new IllegalStateException("Already connected to peer: " + peerId); // Throw exception
         }
 
         DiscoveredPeer peer = deviceDiscoveryService.getPeerById(peerId);
         if (peer == null) {
             logger.warn("Cannot connect: Peer {} not found in discovered list.", peerId);
-            return;
+            return false; // Return false if peer not found
         }
 
-        logger.info("Attempting to connect to peer: {} at {}:{}", peer.getPeerId(), peer.getIpAddress(), peer.getServicePort());
+        logger.info("Attempting to connect to peer: {} at {}:{}\", peer.getPeerId(), peer.getIpAddress(), peer.getServicePort());
 
         P2PConnection.Placeholder placeholder;
         try {
@@ -309,7 +311,7 @@ public class P2PConnectionManager {
             // This is highly unlikely given the Placeholder constructor with null socket,
             // but required due to method signature.
             logger.error("IOException while creating P2PConnection.Placeholder for peer {}. Aborting connection attempt.", peerId, e);
-            return;
+            return false;
         }
 
         // Use putIfAbsent for placeholder to avoid race conditions if called multiple times quickly.
@@ -317,8 +319,13 @@ public class P2PConnectionManager {
         boolean proceedWithConnection = activeConnections.putIfAbsent(peerId, placeholder) == null;
 
         if (!proceedWithConnection) {
-            logger.info("Connection attempt to peer {} is already in progress or established. Aborting this attempt.", peerId);
-            return;
+            logger.info("Connection attempt to peer {} is already in progress or established. Aborting this attempt.\", peerId);
+            // This case might indicate a race condition or concurrent attempts.
+            // If another attempt already placed a placeholder or a real connection,
+            // this attempt should not proceed.
+            // Depending on desired behavior, could throw an exception or return false.
+            // For now, let's consider it a failed initiation from this specific call's perspective.
+            return false;
         }
 
         connectionExecutor.execute(() -> {
@@ -401,6 +408,7 @@ public class P2PConnectionManager {
                 activeConnections.remove(peer.getPeerId());
             }
         });
+        return true; // Connection attempt successfully queued
     }
 
     private void closeClientSocketOnError(Socket clientSocket, String remotePeerId, P2PConnection connection) {
