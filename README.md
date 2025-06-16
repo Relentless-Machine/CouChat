@@ -30,17 +30,18 @@ CouChat is an encrypted peer-to-peer (P2P) communication software designed with 
 
 ## Current Development Status
 
-As of June 16, 2025:
+As of June 17, 2025:
 
-*   The project is focused on completing the **second prototype**, emphasizing core P2P functionality within a Local Area Network (LAN).
-*   Backend development for this prototype is substantially complete, with key features like LAN-based device discovery, end-to-end encrypted text messaging, Passkey-based authentication, and foundational support for file transfer, read receipts, and replies having their core logic and tests in place.
-*   The immediate priority is **frontend development (React/Electron)** to build a user interface that integrates with these backend capabilities.
-*   Key goals for this prototype remain:
-    *   Robust LAN-based device discovery and stable P2P connections.
-    *   Fully functional end-to-end encrypted text messaging between two peers, including support for read receipts and replies.
-    *   Basic end-to-end encrypted file transfer.
-    *   Device Passkey based authentication.
-    *   Integration of the Java backend and React/Electron frontend into a single distributable package.
+*   The **second prototype** is **complete and packaged**. This prototype emphasizes core P2P functionality within a Local Area Network (LAN), including LAN-based device discovery, end-to-end encrypted text messaging, Passkey-based authentication, foundational file transfer support, read receipts, and replies, with a basic integrated UI.
+*   Backend development for this prototype's core features is substantially complete and tested.
+*   The immediate priority is **enhancing the frontend (React/Electron)** by:
+    *   Implementing robust **end-to-end encrypted file transfer capabilities**.
+    *   Building out a more polished and user-friendly interface based on recent UI/UX feedback.
+*   Key goals for this phase remain:
+    *   Fully functional and user-friendly end-to-end encrypted file transfer.
+    *   Significant UI/UX improvements for better usability and aesthetics.
+    *   Continued stabilization of P2P connections and core messaging features.
+    *   Maintaining an integrated and distributable application package.
 *   The `dev` branch is the main line for this ongoing development.
 *   A v0.1.0 frontend prototype (demonstrating UI flows) is available on the `release/v0.1.0-prototype` branch for historical reference.
 
@@ -64,6 +65,7 @@ As of June 16, 2025:
 couchat/
 ├── pom.xml                     # Maven project configuration for backend
 ├── README.md                   # This file
+├── auth_manager_standalone.db  # Local SQLite database file (gitignored)
 ├── couchat_storage.db          # Local SQLite database file (gitignored)
 ├── couchat-frontend/           # React/Electron frontend application
 │   ├── package.json            # Frontend dependencies and scripts (npm/yarn)
@@ -76,9 +78,10 @@ couchat/
 │   ├── eslint.config.js        # ESLint configuration for code linting
 │   ├── index.html              # Main HTML entry point for the Electron renderer process
 │   ├── public/                 # Static assets served by Vite (e.g., vite.svg)
+│   │   ├── icon.ico            # Application icon
 │   │   └── vite.svg
 │   ├── release_builds/         # Output directory for packaged Electron application (gitignored)
-│   │   ├── CouChat Setup 0.0.0.exe # Example installer
+│   │   ├── CouChat Setup 0.1.0.exe # Example installer
 │   │   └── win-unpacked/           # Example unpacked application
 │   └── src/                    # Frontend source code (React + TypeScript)
 │       ├── main.tsx            # React application entry point for the renderer
@@ -86,11 +89,13 @@ couchat/
 │       ├── App.css               # Global styles for App component
 │       ├── index.css             # Global styles
 │       ├── vite-env.d.ts       # TypeScript definitions for Vite environment variables
+│       ├── config.ts           # Configuration file for frontend settings (e.g., API URLs)
 │       ├── assets/             # Frontend static assets (images, svgs, etc.)
 │       │   └── react.svg
 │       ├── components/         # Reusable React components
 │       │   ├── LoginForm.tsx
-│       │   └── ProtectedRoute.tsx
+│       │   ├── ProtectedRoute.tsx
+│       │   └── UserDiscoveryPanel.tsx
 │       ├── contexts/           # React Context API for global state management
 │       │   └── AuthContext.tsx
 │       ├── pages/              # Page-level React components
@@ -99,6 +104,7 @@ couchat/
 │       └── services/           # Frontend services for API calls and business logic
 │           ├── AuthService.ts
 │           ├── MessageService.ts
+│           ├── P2PService.ts
 │           └── FileTransferService.ts # (Planned)
 └── src/                        # Java backend source code (Maven structure)
     ├── main/
@@ -145,20 +151,45 @@ couchat/
 
 ## Next Steps
 
-With backend core P2P and messaging tests passing:
+With the second prototype packaged and core backend functionalities in place:
 
-- **Frontend Development**: 
-    - Implement UI for LAN user discovery and initiating chats.
-    - Develop the main chat interface for sending/receiving encrypted text and files.
-    - Integrate Passkey generation and login UI flows.
-    - Connect React components to backend APIs via Electron's IPC or local HTTP requests.
+- **Frontend Development**:
+    - **Implement robust end-to-end encrypted file transfer**:
+        - Develop the UI for selecting, sending, and receiving files.
+        - Show file transfer progress, and handle cancellations and errors.
+        - Integrate with the backend `FileTransferService`.
+    - **Implement comprehensive UI/UX enhancements**:
+        - **User Identification**:
+            - Replace UUIDs with user-configurable nicknames in chat windows and user lists.
+            - Add an avatar system (e.g., default colored avatars with initials, with potential for custom image uploads later).
+        - **Chat Interface**:
+            - Implement distinct styling (e.g., color, alignment) for sender and receiver message bubbles.
+            - Optimize message timestamp display (e.g., group by time, show on hover, or less frequently).
+            - Add scroll-to-load functionality for fetching older messages.
+            - Enhance the message input area with a clear border and a distinct send button.
+            - Add placeholder buttons/icons for future features like emojis.
+        - **Sidebar/User List**:
+            - Change "Discover Users on LAN" to a more intuitive label like "Nearby Users" or "Online Users".
+            - Display user nicknames instead of full UUIDs in the user list.
+            - Add visual online status indicators (e.g., a green dot).
+            - Implement a "Recent Chats" list for quick access.
+            - Replace the "Refresh User List" text button with an icon button.
+        - **General Layout & Theming**:
+            - Increase padding and spacing for a cleaner, less cluttered look.
+            - Review and modernize the color scheme for better visual harmony.
+            - Plan and implement a night mode/dark theme option.
+            - Improve the visual styling of scrollbars.
+    - Integrate Passkey generation and login UI flows if further enhancements are needed beyond the current prototype.
+    - Connect React components to backend APIs via Electron's IPC or local HTTP requests for new functionalities.
 - **Backend Refinement (As Needed)**:
-    - Further stabilize P2P connections based on integration testing.
-    - Optimize file transfer for larger files if necessary.
+    - Further stabilize P2P connections and messaging based on ongoing integration testing with the enhanced frontend.
+    - Optimize file transfer mechanisms for larger files or concurrent transfers if performance issues arise.
+    - Continue backend enhancements based on the SRS and SDD, including considerations for future features like advanced group chat functionalities, trusted server interactions, and compliance requirements (e.g., exploring PRE for secure data sharing with authorized entities).
 - **Integration & Packaging**:
-    - Package the Java backend (Spring Boot JAR) and React/Electron frontend into a single distributable application.
+    - Maintain and refine the build process for the integrated distributable application (Electron with bundled Java backend).
 - **End-to-End Testing**:
-    - Conduct thorough end-to-end testing of the integrated prototype on a LAN, covering all core features of the second prototype.
+    - Conduct thorough end-to-end testing of the newly implemented file transfer feature and all UI/UX changes on a LAN.
+    - Test various scenarios, including different file types, sizes, and network conditions.
 
 ## Contribution
 
