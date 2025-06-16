@@ -44,6 +44,7 @@ As of June 17, 2025:
     *   Maintaining an integrated and distributable application package.
 *   The `dev` branch is the main line for this ongoing development.
 *   A v0.1.0 frontend prototype (demonstrating UI flows) is available on the `release/v0.1.0-prototype` branch for historical reference.
+*   The **second prototype (v0.2.0)**, which is complete and packaged (emphasizing core LAN P2P functionality, E2EE text messaging, Passkey auth, foundational file transfer, read receipts, replies, and a basic integrated UI), is available on the `release/v0.2.0-prototype` branch for historical reference.
 
 ## Modules (Backend - Key Services)
 
